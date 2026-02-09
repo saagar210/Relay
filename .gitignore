@@ -1,0 +1,29 @@
+# Rust
+target/
+*.swp
+*.swo
+
+# Node
+node_modules/
+dist/
+.pnpm-debug.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Environment
+.env
+.env.local
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Go
+server/relay-server
