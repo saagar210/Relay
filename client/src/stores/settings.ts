@@ -8,7 +8,7 @@ export interface SettingsStore {
 
 const stored = {
   signalServerUrl:
-    localStorage.getItem("relay:signalServerUrl") || "wss://relay-signal.fly.dev",
+    localStorage.getItem("relay:signalServerUrl") || "ws://localhost:8080",
   defaultSaveDir: localStorage.getItem("relay:defaultSaveDir") || "",
   theme: (localStorage.getItem("relay:theme") as "dark" | "light") || "dark",
 };

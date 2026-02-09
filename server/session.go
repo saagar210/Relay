@@ -21,6 +21,7 @@ type Session struct {
 type Peer struct {
 	Conn    *websocket.Conn
 	Role    string
+	Info    *PeerInfo // from register message (local_ip, local_port)
 	Done    chan struct{}
 	writeMu sync.Mutex
 }

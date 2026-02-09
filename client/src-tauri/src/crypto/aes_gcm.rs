@@ -48,6 +48,12 @@ impl ChunkEncryptor {
         Ok((in_out, nonce_bytes))
     }
 
+    /// Encrypt a single small payload (convenience for non-streaming use).
+    /// Returns (ciphertext_with_tag, nonce).
+    pub fn encrypt_one(mut self, plaintext: &[u8]) -> AppResult<(Vec<u8>, [u8; 12])> {
+        self.encrypt_chunk(plaintext)
+    }
+
     fn make_nonce(&self) -> [u8; 12] {
         let mut nonce = [0u8; 12];
         nonce[..4].copy_from_slice(&self.nonce_prefix);
@@ -68,6 +74,11 @@ impl ChunkDecryptor {
         Ok(Self {
             key: LessSafeKey::new(unbound),
         })
+    }
+
+    /// Decrypt a single small payload (convenience for non-streaming use).
+    pub fn decrypt_one(self, ciphertext: &[u8], nonce: &[u8; 12]) -> AppResult<Vec<u8>> {
+        self.decrypt_chunk(ciphertext, nonce)
     }
 
     /// Decrypt a chunk. `ciphertext` includes the 16-byte auth tag at the end.

@@ -71,6 +71,7 @@ func (s *Server) WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	peer := &Peer{
 		Conn: conn,
 		Role: reg.Role,
+		Info: reg.PeerInfo,
 		Done: make(chan struct{}),
 	}
 
@@ -103,8 +104,8 @@ func (s *Server) notifyPeersJoined(sess *Session) {
 		return
 	}
 
-	senderInfo := peerInfoFromConn(sender.Conn)
-	receiverInfo := peerInfoFromConn(receiver.Conn)
+	senderInfo := buildPeerInfo(sender)
+	receiverInfo := buildPeerInfo(receiver)
 
 	// Tell the sender about the receiver.
 	_ = sender.WriteJSON(SignalMessage{
@@ -117,6 +118,24 @@ func (s *Server) notifyPeersJoined(sess *Session) {
 		Type:     "peer_joined",
 		PeerInfo: senderInfo,
 	})
+}
+
+// buildPeerInfo merges the peer's registered info (local_ip, local_port)
+// with the detected public IP from the WebSocket connection.
+func buildPeerInfo(p *Peer) *PeerInfo {
+	detected := peerInfoFromConn(p.Conn)
+
+	if p.Info == nil {
+		return detected
+	}
+
+	// Use detected public IP, but keep the registered local info
+	return &PeerInfo{
+		PublicIP:   detected.PublicIP,
+		PublicPort: p.Info.LocalPort, // QUIC port, not WebSocket port
+		LocalIP:    p.Info.LocalIP,
+		LocalPort:  p.Info.LocalPort,
+	}
 }
 
 func (s *Server) forwardLoop(sess *Session, peer *Peer, code string) {

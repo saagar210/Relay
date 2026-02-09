@@ -81,7 +81,8 @@ impl QuicEndpoint {
     }
 
     /// Connect to a peer at the given address.
-    /// Phase 1: skip fingerprint verification (LAN trust).
+    /// Uses the existing endpoint with a client config so the connection
+    /// lifetime is tied to the endpoint (not dropped prematurely).
     pub async fn connect(&self, addr: SocketAddr) -> AppResult<Connection> {
         // Client config that accepts any cert (we rely on SPAKE2 for auth)
         let client_crypto = rustls::ClientConfig::builder()
@@ -94,12 +95,9 @@ impl QuicEndpoint {
                 .map_err(|e| AppError::Crypto(format!("QUIC client config: {e}")))?,
         ));
 
-        let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
-            .map_err(|e| AppError::Network(format!("client endpoint: {e}")))?;
-        endpoint.set_default_client_config(client_config);
-
-        let conn = endpoint
-            .connect(addr, "relay.local")
+        let conn = self
+            .endpoint
+            .connect_with(client_config, addr, "relay.local")
             .map_err(|e| AppError::Network(format!("connect: {e}")))?
             .await
             .map_err(|e| AppError::Network(format!("connection failed: {e}")))?;
@@ -123,6 +121,8 @@ impl QuicEndpoint {
 
 impl Drop for QuicEndpoint {
     fn drop(&mut self) {
+        // Use wait_idle=false to avoid blocking in drop.
+        // The connection should drain naturally via QUIC's protocol.
         self.endpoint.close(0u32.into(), b"done");
     }
 }

@@ -59,16 +59,26 @@ export type ProgressEvent =
   | ErrorEvent
   | StateChangedEvent;
 
-export async function startSend(filePaths: string[]): Promise<SendStarted> {
-  return invoke<SendStarted>("start_send", { filePaths });
+export async function startSend(
+  filePaths: string[],
+  signalServerUrl?: string
+): Promise<SendStarted> {
+  return invoke<SendStarted>("start_send", {
+    filePaths,
+    signalServerUrl,
+  });
 }
 
 export async function startReceive(
   code: string,
   saveDir: string,
-  senderAddr: string
+  signalServerUrl?: string
 ): Promise<string> {
-  return invoke<string>("start_receive", { code, saveDir, senderAddr });
+  return invoke<string>("start_receive", {
+    code,
+    saveDir,
+    signalServerUrl,
+  });
 }
 
 export async function acceptTransfer(

@@ -1,23 +1,23 @@
 import { createSignal, Show } from "solid-js";
 import { transfer, setTransfer, resetTransfer } from "../stores/transfer";
+import { settings } from "../stores/settings";
 import { startReceive, acceptTransfer } from "../lib/tauri-bridge";
 import { formatBytes } from "../lib/format";
 import CodeInput from "./CodeInput";
 import FileList from "./FileList";
 
 export default function ReceiveView() {
-  const [senderAddr, setSenderAddr] = createSignal("");
   const [saveDir, setSaveDir] = createSignal("");
 
   async function handleCodeSubmit(code: string) {
-    if (!senderAddr()) {
-      // For Phase 1 LAN demo, need sender address
-      return;
-    }
     setTransfer("phase", "connecting");
     try {
-      const dir = saveDir() || "/tmp/relay-received";
-      const sessionId = await startReceive(code, dir, senderAddr());
+      const dir = saveDir() || settings.defaultSaveDir || "/tmp/relay-received";
+      const sessionId = await startReceive(
+        code,
+        dir,
+        settings.signalServerUrl || undefined
+      );
       setTransfer("sessionId", sessionId);
     } catch (e) {
       setTransfer("phase", "error");
@@ -42,15 +42,7 @@ export default function ReceiveView() {
           <h2 class="text-2xl font-semibold text-center">Receive Files</h2>
           <CodeInput onSubmit={handleCodeSubmit} />
 
-          {/* Phase 1: Manual sender address input */}
           <div class="space-y-3 pt-2">
-            <input
-              type="text"
-              value={senderAddr()}
-              onInput={(e) => setSenderAddr(e.currentTarget.value)}
-              class="w-full px-3 py-2 text-sm font-mono bg-[#1e1e1e] border border-[#333] rounded-lg focus:border-[#3b82f6] focus:outline-none"
-              placeholder="Sender address (e.g., 192.168.1.5:12345)"
-            />
             <input
               type="text"
               value={saveDir()}

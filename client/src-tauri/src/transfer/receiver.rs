@@ -31,12 +31,13 @@ pub async fn run_receive(
         .ok();
 
     // Connect to sender
+    info!("receiver: attempting QUIC connect to {peer_addr}");
     let conn = tokio::select! {
         result = quic.connect(peer_addr) => result?,
         _ = cancel.cancelled() => return Err(AppError::Cancelled),
     };
 
-    info!("receiver: connected to sender");
+    info!("receiver: connected to sender at {}", conn.remote_address());
 
     // Accept the bidirectional stream opened by the sender
     let (mut send_stream, mut recv_stream) = conn

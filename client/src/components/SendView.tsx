@@ -1,8 +1,8 @@
 import { Show } from "solid-js";
 import { open } from "@tauri-apps/plugin-dialog";
-import { transfer, setTransfer } from "../stores/transfer";
+import { transfer, setTransfer, resetTransfer } from "../stores/transfer";
+import { settings } from "../stores/settings";
 import { startSend } from "../lib/tauri-bridge";
-import { resetTransfer } from "../stores/transfer";
 import CodeDisplay from "./CodeDisplay";
 import FileList from "./FileList";
 
@@ -21,7 +21,10 @@ export default function SendView() {
   async function handleSend() {
     if (transfer.selectedFiles.length === 0) return;
     try {
-      const result = await startSend(transfer.selectedFiles);
+      const result = await startSend(
+        transfer.selectedFiles,
+        settings.signalServerUrl || undefined
+      );
       setTransfer("code", result.code);
       setTransfer("sessionId", result.session_id);
       setTransfer("senderPort", result.port);

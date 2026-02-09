@@ -173,10 +173,14 @@ pub async fn run_send(
     // Send transfer complete
     messages::write_message(&mut send_stream, &PeerMessage::TransferComplete).await?;
 
-    // Finish the send stream
+    // Finish the send stream — signals to receiver that we're done writing.
     send_stream
         .finish()
         .map_err(|e| AppError::Network(format!("failed to finish stream: {e}")))?;
+
+    // Wait briefly for the receiver to process the TransferComplete message
+    // before we drop the QUIC endpoint (which force-closes the connection).
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     progress_tx
         .send(ProgressEvent::TransferComplete {
