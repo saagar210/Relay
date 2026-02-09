@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::crypto::spake::KeyExchange;
 use crate::network::quic::QuicEndpoint;
+use crate::network::relay::RelayStream;
 use crate::network::signaling::{PeerInfo, SignalingClient};
+use crate::network::transport::Transport;
 use crate::transfer::code::TransferCode;
 use crate::transfer::progress::ProgressEvent;
 use crate::transfer::receiver;
@@ -18,6 +20,8 @@ use super::transfer::{AcceptChannelStore, SessionStore};
 
 const DEFAULT_SIGNAL_URL: &str = "ws://localhost:8080";
 
+/// Timeout for the receiver trying to connect to sender via QUIC.
+const RECEIVER_QUIC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Start receiving: parse code, connect to signaling server, discover sender, transfer.
 #[tauri::command]
@@ -31,7 +35,6 @@ pub async fn start_receive(
     let save_path = PathBuf::from(&save_dir);
 
     if !save_path.is_dir() {
-        // Create it if it doesn't exist
         tokio::fs::create_dir_all(&save_path)
             .await
             .map_err(|e| format!("Cannot create save directory: {e}"))?;
@@ -105,7 +108,8 @@ pub async fn start_receive(
     Ok(session_id)
 }
 
-/// Full receive flow with signaling server for peer discovery and SPAKE2 key exchange.
+/// Full receive flow with signaling server, SPAKE2 key exchange,
+/// and fallback to relay if QUIC connection fails.
 async fn run_receive_with_signaling(
     save_dir: PathBuf,
     code: &str,
@@ -123,10 +127,10 @@ async fn run_receive_with_signaling(
     // 1. Connect to signaling server
     let mut signaling = SignalingClient::connect(server_url, code).await?;
 
-    // 2. Register as receiver (no local QUIC addr — receiver connects to sender)
+    // 2. Register as receiver
     signaling.register("receiver", None).await?;
 
-    // 3. Wait for sender to join (or if we joined second, get their info immediately)
+    // 3. Wait for sender to join
     let peer_info = signaling.wait_for_peer().await?;
     info!("receive: sender discovered via signaling");
 
@@ -144,18 +148,48 @@ async fn run_receive_with_signaling(
         .await?;
     info!("receive: cert fingerprint exchange complete");
 
-    // 6. Disconnect from signaling server
-    signaling.disconnect().await?;
+    // 6. Try QUIC connection to sender, fall back to relay on timeout/failure.
+    let peer_addr = resolve_peer_addr(&peer_info);
 
-    // 7. Connect to sender via QUIC
-    // Try the sender's addresses: first local (same LAN), then public
-    let peer_addr = resolve_peer_addr(&peer_info)?;
-    info!("receive: connecting to sender at {peer_addr}");
+    let mut transport = match peer_addr {
+        Ok(addr) => {
+            info!("receive: attempting QUIC connect to {addr} (timeout {}s)", RECEIVER_QUIC_TIMEOUT.as_secs());
+            match tokio::time::timeout(RECEIVER_QUIC_TIMEOUT, quic.connect(addr)).await {
+                Ok(Ok(conn)) => {
+                    info!("receive: direct QUIC connection established");
+                    signaling.disconnect().await.ok();
 
+                    progress_tx
+                        .send(ProgressEvent::ConnectionTypeChanged {
+                            connection_type: "direct".into(),
+                        })
+                        .ok();
+
+                    let (send, recv) = conn.accept_bi().await.map_err(|e| {
+                        crate::error::AppError::Network(format!("failed to accept stream: {e}"))
+                    })?;
+                    Transport::Direct { send, recv }
+                }
+                Ok(Err(e)) => {
+                    warn!("receive: QUIC connect failed: {e}, falling back to relay");
+                    activate_relay(signaling, &progress_tx).await?
+                }
+                Err(_) => {
+                    warn!("receive: QUIC connect timed out, falling back to relay");
+                    activate_relay(signaling, &progress_tx).await?
+                }
+            }
+        }
+        Err(e) => {
+            warn!("receive: no usable peer address ({e}), going direct to relay");
+            activate_relay(signaling, &progress_tx).await?
+        }
+    };
+
+    // 7. Run transfer over the established transport
     receiver::run_receive(
         save_dir,
-        &quic,
-        peer_addr,
+        &mut transport,
         encryption_key,
         progress_tx,
         accept_rx,
@@ -164,12 +198,32 @@ async fn run_receive_with_signaling(
     .await
 }
 
+/// Request relay mode from the signaling server, then convert the WebSocket
+/// into a relay transport.
+async fn activate_relay(
+    mut signaling: SignalingClient,
+    progress_tx: &mpsc::UnboundedSender<ProgressEvent>,
+) -> Result<Transport, crate::error::AppError> {
+    signaling.request_relay().await?;
+
+    progress_tx
+        .send(ProgressEvent::ConnectionTypeChanged {
+            connection_type: "relay".into(),
+        })
+        .ok();
+
+    let ws = signaling.into_ws();
+    Ok(Transport::Relayed {
+        ws: RelayStream::new(ws),
+    })
+}
+
 /// Determine the best address to connect to the sender.
-/// For now: prefer local IP (LAN), fall back to public IP.
+/// Prefer local IP (LAN), fall back to public IP.
 fn resolve_peer_addr(peer_info: &PeerInfo) -> Result<SocketAddr, crate::error::AppError> {
     use crate::error::AppError;
 
-    // Try local address first (same LAN — most reliable)
+    // Try local address first (same LAN)
     if !peer_info.local_ip.is_empty() && peer_info.local_port > 0 {
         if let Ok(addr) = format!("{}:{}", peer_info.local_ip, peer_info.local_port).parse() {
             return Ok(addr);
@@ -184,7 +238,7 @@ fn resolve_peer_addr(peer_info: &PeerInfo) -> Result<SocketAddr, crate::error::A
     }
 
     Err(AppError::Network(
-        "no usable address for sender (signaling server did not provide network info)".into(),
+        "no usable address for sender".into(),
     ))
 }
 

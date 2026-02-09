@@ -9,18 +9,20 @@ import (
 
 // Server manages signaling sessions between peers.
 type Server struct {
-	sessions    map[string]*Session
-	mu          sync.RWMutex
-	maxSessions int
-	sessionTTL  time.Duration
+	sessions     map[string]*Session
+	mu           sync.RWMutex
+	maxSessions  int
+	sessionTTL   time.Duration
+	relayLimiter *RateLimiter
 }
 
-// NewServer creates a Server with the given capacity and TTL.
-func NewServer(maxSessions int, sessionTTL time.Duration) *Server {
+// NewServer creates a Server with the given capacity, TTL, and relay rate limit.
+func NewServer(maxSessions int, sessionTTL time.Duration, relayRateLimit int64) *Server {
 	return &Server{
-		sessions:    make(map[string]*Session),
-		maxSessions: maxSessions,
-		sessionTTL:  sessionTTL,
+		sessions:     make(map[string]*Session),
+		maxSessions:  maxSessions,
+		sessionTTL:   sessionTTL,
+		relayLimiter: NewRateLimiter(relayRateLimit),
 	}
 }
 
@@ -54,6 +56,7 @@ func (s *Server) GetOrCreateSession(code string, role string) (*Session, error) 
 		Code:      code,
 		CreatedAt: now,
 		ExpiresAt: now.Add(s.sessionTTL),
+		relayDone: make(chan struct{}),
 	}
 	s.sessions[code] = sess
 	return sess, nil

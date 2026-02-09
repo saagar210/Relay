@@ -28,8 +28,8 @@ type PeerInfo struct {
 }
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
+	ReadBufferSize:  256 * 1024,
+	WriteBufferSize: 256 * 1024,
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
@@ -92,6 +92,52 @@ func (s *Server) WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Message forwarding loop.
 	s.forwardLoop(sess, peer, code)
+
+	// After forwardLoop exits, check if this peer should run the relay.
+	// Only the sender's goroutine runs the relay to avoid races.
+	sess.mu.Lock()
+	shouldRelay := sess.RelayActive && peer.Role == "sender"
+	shouldWait := sess.RelayActive && peer.Role == "receiver"
+	sess.mu.Unlock()
+
+	if shouldRelay {
+		// Wait for the receiver's forwardLoop to exit.
+		sess.mu.Lock()
+		receiver := sess.Receiver
+		sess.mu.Unlock()
+		if receiver != nil {
+			<-receiver.Done
+		}
+
+		sess.mu.Lock()
+		sender := sess.Sender
+		receiver = sess.Receiver
+		sess.mu.Unlock()
+
+		if sender != nil && receiver != nil {
+			// Set larger read limits for binary relay traffic.
+			sender.Conn.SetReadLimit(16 * 1024 * 1024)
+			receiver.Conn.SetReadLimit(16 * 1024 * 1024)
+
+			relayLoop(sender, receiver, s.relayLimiter)
+
+			sender.Close()
+			receiver.Close()
+		}
+
+		sess.mu.Lock()
+		sess.Sender = nil
+		sess.Receiver = nil
+		sess.mu.Unlock()
+		s.RemoveSession(code)
+
+		// Signal that relay is done so the receiver's handler can exit.
+		close(sess.relayDone)
+	} else if shouldWait {
+		// The receiver's HTTP handler must stay alive while the relay runs,
+		// otherwise the HTTP server closes the underlying TCP connection.
+		<-sess.relayDone
+	}
 }
 
 func (s *Server) notifyPeersJoined(sess *Session) {
@@ -140,8 +186,25 @@ func buildPeerInfo(p *Peer) *PeerInfo {
 
 func (s *Server) forwardLoop(sess *Session, peer *Peer, code string) {
 	defer func() {
+		// Signal that this peer's forwardLoop has exited.
+		select {
+		case <-peer.Done:
+		default:
+			close(peer.Done)
+		}
+
 		sess.mu.Lock()
+		relayActive := sess.RelayActive
 		other := sess.OtherPeer(peer)
+		sess.mu.Unlock()
+
+		// Don't close connections or clear peers if relay will take ownership.
+		if relayActive {
+			return
+		}
+
+		// Normal exit: clean up.
+		sess.mu.Lock()
 		if peer.Role == "sender" {
 			sess.Sender = nil
 		} else {
@@ -178,16 +241,59 @@ func (s *Server) forwardLoop(sess *Session, peer *Peer, code string) {
 		case "disconnect":
 			return
 
+		case "relay_ready":
+			// Client has acknowledged relay_active and is ready for binary.
+			// Exit the forwardLoop so the relay can take over this connection.
+			return
+
 		case "spake2", "cert_fingerprint":
 			sess.mu.Lock()
 			other := sess.OtherPeer(peer)
 			sess.mu.Unlock()
-
 			if other != nil {
 				if err := other.WriteJSON(msg); err != nil {
 					log.Printf("forward error on session %s: %v", code, err)
 					return
 				}
+			}
+
+		case "relay_request":
+			sess.mu.Lock()
+			if peer.Role == "sender" {
+				sess.SenderWantsRelay = true
+			} else {
+				sess.ReceiverWantsRelay = true
+			}
+			bothWant := sess.SenderWantsRelay && sess.ReceiverWantsRelay
+			other := sess.OtherPeer(peer)
+			sess.mu.Unlock()
+
+			if bothWant {
+				sess.mu.Lock()
+				sess.RelayActive = true
+				sender := sess.Sender
+				receiver := sess.Receiver
+				sess.mu.Unlock()
+
+				log.Printf("relay: both peers requested relay for session %s", code)
+
+				if sender != nil {
+					_ = sender.WriteJSON(SignalMessage{Type: "relay_active"})
+				}
+				if receiver != nil {
+					_ = receiver.WriteJSON(SignalMessage{Type: "relay_active"})
+				}
+
+				// This forwardLoop returns immediately. The other peer's
+				// forwardLoop will exit when it receives "relay_ready" from
+				// its client. The sender's WebSocketHandler starts the relay
+				// after both exit.
+				return
+			}
+
+			// Forward relay_request to the other peer (only the first one).
+			if other != nil {
+				_ = other.WriteJSON(msg)
 			}
 
 		default:

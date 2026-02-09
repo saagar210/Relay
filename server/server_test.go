@@ -9,7 +9,7 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	srv := NewServer(100, 10*time.Minute)
+	srv := NewServer(100, 10*time.Minute, 10*1024*1024)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -32,7 +32,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestSessionCreation(t *testing.T) {
-	srv := NewServer(100, 10*time.Minute)
+	srv := NewServer(100, 10*time.Minute, 10*1024*1024)
 
 	sess, err := srv.GetOrCreateSession("abc123", "sender")
 	if err != nil {
@@ -48,7 +48,7 @@ func TestSessionCreation(t *testing.T) {
 
 func TestSessionExpiry(t *testing.T) {
 	// Use a very short TTL so sessions expire immediately.
-	srv := NewServer(100, 1*time.Millisecond)
+	srv := NewServer(100, 1*time.Millisecond, 10*1024*1024)
 
 	_, err := srv.GetOrCreateSession("expire-me", "sender")
 	if err != nil {
@@ -65,7 +65,7 @@ func TestSessionExpiry(t *testing.T) {
 }
 
 func TestMaxSessions(t *testing.T) {
-	srv := NewServer(2, 10*time.Minute)
+	srv := NewServer(2, 10*time.Minute, 10*1024*1024)
 
 	_, err := srv.GetOrCreateSession("s1", "sender")
 	if err != nil {

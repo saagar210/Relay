@@ -14,7 +14,18 @@ export default function SendView() {
     });
     if (selected) {
       const paths = Array.isArray(selected) ? selected : [selected];
-      setTransfer("selectedFiles", paths);
+      setTransfer("selectedFiles", [...transfer.selectedFiles, ...paths]);
+    }
+  }
+
+  async function selectFolder() {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+    });
+    if (selected) {
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      setTransfer("selectedFiles", [...transfer.selectedFiles, path]);
     }
   }
 
@@ -41,15 +52,27 @@ export default function SendView() {
         <div class="text-center space-y-6">
           <h2 class="text-2xl font-semibold">Send Files</h2>
 
-          <button
-            class="w-full py-12 border-2 border-dashed border-[#333] hover:border-[#3b82f6] rounded-xl text-[#a0a0a0] hover:text-white transition-colors"
-            onClick={selectFiles}
-          >
-            <div class="space-y-2">
-              <p class="text-lg">Click to select files</p>
-              <p class="text-sm">or drag and drop (coming soon)</p>
-            </div>
-          </button>
+          <div class="flex gap-3">
+            <button
+              class="flex-1 py-12 border-2 border-dashed border-[#333] hover:border-[#3b82f6] rounded-xl text-[#a0a0a0] hover:text-white transition-colors"
+              onClick={selectFiles}
+            >
+              <div class="space-y-2">
+                <p class="text-lg">Select Files</p>
+                <p class="text-sm">Choose individual files</p>
+              </div>
+            </button>
+
+            <button
+              class="flex-1 py-12 border-2 border-dashed border-[#333] hover:border-[#3b82f6] rounded-xl text-[#a0a0a0] hover:text-white transition-colors"
+              onClick={selectFolder}
+            >
+              <div class="space-y-2">
+                <p class="text-lg">Select Folder</p>
+                <p class="text-sm">Send an entire folder</p>
+              </div>
+            </button>
+          </div>
 
           <Show when={transfer.selectedFiles.length > 0}>
             <FileList

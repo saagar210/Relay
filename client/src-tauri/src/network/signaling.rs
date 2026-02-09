@@ -247,6 +247,76 @@ impl SignalingClient {
         }
     }
 
+    /// Request relay mode from the signaling server.
+    /// Sends a relay_request, waits for relay_active confirmation.
+    pub async fn request_relay(&mut self) -> AppResult<()> {
+        let msg = SignalMessage {
+            msg_type: "relay_request".into(),
+            role: None,
+            message: None,
+            code: None,
+            peer_info: None,
+            payload: None,
+        };
+        self.send_json(&msg).await?;
+        info!("signaling: sent relay_request");
+
+        // Wait for relay_active
+        loop {
+            let msg = self.recv_json().await?;
+            match msg.msg_type.as_str() {
+                "relay_active" => {
+                    info!("signaling: relay mode activated");
+                    // Send relay_ready to tell the server we're done with
+                    // JSON signaling and ready for binary relay traffic.
+                    let ready = SignalMessage {
+                        msg_type: "relay_ready".into(),
+                        role: None,
+                        message: None,
+                        code: None,
+                        peer_info: None,
+                        payload: None,
+                    };
+                    self.send_json(&ready).await?;
+                    return Ok(());
+                }
+                "error" => {
+                    let err_msg = msg.message.unwrap_or_else(|| "unknown error".into());
+                    return Err(AppError::WebSocket(format!("relay error: {err_msg}")));
+                }
+                other => {
+                    debug!("signaling: ignoring '{other}' while waiting for relay_active");
+                }
+            }
+        }
+    }
+
+    /// Check for an incoming relay request from the peer.
+    /// Returns Ok(true) if a relay_request was received, Ok(false) for other messages.
+    pub async fn check_for_relay_request(&mut self) -> AppResult<bool> {
+        let msg = self.recv_json().await?;
+        match msg.msg_type.as_str() {
+            "relay_request" => {
+                info!("signaling: peer requested relay");
+                Ok(true)
+            }
+            "error" => {
+                let err_msg = msg.message.unwrap_or_else(|| "unknown error".into());
+                Err(AppError::WebSocket(format!("server error: {err_msg}")))
+            }
+            other => {
+                debug!("signaling: got '{other}' instead of relay_request");
+                Ok(false)
+            }
+        }
+    }
+
+    /// Extract the underlying WebSocket stream for relay mode.
+    /// Consumes the signaling client without sending a disconnect.
+    pub fn into_ws(self) -> WsStream {
+        self.ws
+    }
+
     /// Send a disconnect message and close the WebSocket.
     pub async fn disconnect(mut self) -> AppResult<()> {
         let msg = SignalMessage {

@@ -131,12 +131,17 @@ pub enum ProgressEvent {
         session_id: String,
         files: Vec<FileOfferInfo>,
     },
+    ConnectionTypeChanged {
+        connection_type: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FileOfferInfo {
     pub name: String,
     pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relative_path: Option<String>,
 }
 
 #[cfg(test)]

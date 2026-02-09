@@ -1,7 +1,7 @@
 // Sender pipeline — orchestrates the full send flow.
 // Phase 1: Direct QUIC on LAN.
 // Phase 2: Via signaling server.
-// Phase 3: With relay fallback.
+// Phase 3: With relay fallback + folder support.
 
 use std::path::PathBuf;
 
@@ -10,75 +10,41 @@ use tracing::{info, warn};
 
 use crate::crypto::aes_gcm::ChunkEncryptor;
 use crate::error::{AppError, AppResult};
-use crate::network::quic::QuicEndpoint;
+use crate::network::transport::Transport;
 use crate::protocol::chunker::FileChunker;
-use crate::protocol::messages::{self, FileInfo, PeerMessage};
+use crate::protocol::messages::{FileInfo, PeerMessage};
 use crate::transfer::progress::{ProgressEvent, ProgressTracker};
 
-/// Run the sender pipeline for a direct LAN transfer.
+/// Run the sender pipeline over an established transport (QUIC or relay).
+///
+/// `files` — absolute paths to each file on disk (one per FileInfo entry).
+/// `file_infos` — metadata including name, size, and optional relative_path for folders.
 pub async fn run_send(
     files: Vec<PathBuf>,
-    quic: &QuicEndpoint,
+    file_infos: Vec<FileInfo>,
+    transport: &mut Transport,
     encryption_key: [u8; 32],
     progress_tx: mpsc::UnboundedSender<ProgressEvent>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> AppResult<()> {
-    info!("sender: waiting for incoming QUIC connection");
-    progress_tx
-        .send(ProgressEvent::StateChanged {
-            state: "connecting".into(),
-        })
-        .ok();
-
-    // Accept one incoming connection
-    let conn = tokio::select! {
-        result = quic.accept_any() => result?,
-        _ = cancel.cancelled() => return Err(AppError::Cancelled),
-    };
-
-    info!("sender: peer connected");
+    info!("sender: starting transfer ({} files)", files.len());
     progress_tx
         .send(ProgressEvent::StateChanged {
             state: "transferring".into(),
         })
         .ok();
 
-    // Open a bidirectional stream
-    let (mut send_stream, mut recv_stream) = conn
-        .open_bi()
-        .await
-        .map_err(|e| AppError::Network(format!("failed to open stream: {e}")))?;
-
-    // Build file info list
-    let file_infos: Vec<FileInfo> = {
-        let mut infos = Vec::with_capacity(files.len());
-        for path in &files {
-            let meta = tokio::fs::metadata(path).await?;
-            infos.push(FileInfo {
-                name: path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".into()),
-                size: meta.len(),
-                relative_path: None,
-            });
-        }
-        infos
-    };
-
     let total_bytes: u64 = file_infos.iter().map(|f| f.size).sum();
 
     // Send file offer
-    messages::write_message(
-        &mut send_stream,
-        &PeerMessage::FileOffer {
+    transport
+        .send_peer_message(&PeerMessage::FileOffer {
             files: file_infos.clone(),
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     // Wait for accept/decline
-    let response = messages::read_message(&mut recv_stream).await?;
+    let response = transport.recv_peer_message().await?;
     match response {
         PeerMessage::FileAccept => {
             info!("sender: peer accepted transfer");
@@ -104,27 +70,25 @@ pub async fn run_send(
 
         // Send chunks
         while let Some((data, nonce, chunk_index)) = chunker.next_chunk().await? {
-            // Check for cancellation
             if cancel.is_cancelled() {
-                messages::write_message(&mut send_stream, &PeerMessage::Cancel {
-                    reason: "cancelled by sender".into(),
-                })
-                .await
-                .ok();
+                transport
+                    .send_peer_message(&PeerMessage::Cancel {
+                        reason: "cancelled by sender".into(),
+                    })
+                    .await
+                    .ok();
                 return Err(AppError::Cancelled);
             }
 
             let chunk_len = data.len() as u64;
-            messages::write_message(
-                &mut send_stream,
-                &PeerMessage::FileChunk {
+            transport
+                .send_peer_message(&PeerMessage::FileChunk {
                     file_index: file_index as u16,
                     chunk_index,
                     data,
                     nonce,
-                },
-            )
-            .await?;
+                })
+                .await?;
 
             tracker.update(chunk_len);
             progress_tx
@@ -141,17 +105,15 @@ pub async fn run_send(
 
         // Send file complete with checksum
         let checksum = chunker.finalize();
-        messages::write_message(
-            &mut send_stream,
-            &PeerMessage::FileComplete {
+        transport
+            .send_peer_message(&PeerMessage::FileComplete {
                 file_index: file_index as u16,
                 sha256: checksum,
-            },
-        )
-        .await?;
+            })
+            .await?;
 
         // Wait for verification
-        let verify = messages::read_message(&mut recv_stream).await?;
+        let verify = transport.recv_peer_message().await?;
         match verify {
             PeerMessage::FileVerified { .. } => {
                 info!("sender: file '{file_name}' verified by receiver");
@@ -171,15 +133,14 @@ pub async fn run_send(
     }
 
     // Send transfer complete
-    messages::write_message(&mut send_stream, &PeerMessage::TransferComplete).await?;
+    transport
+        .send_peer_message(&PeerMessage::TransferComplete)
+        .await?;
 
-    // Finish the send stream — signals to receiver that we're done writing.
-    send_stream
-        .finish()
-        .map_err(|e| AppError::Network(format!("failed to finish stream: {e}")))?;
+    // Finish the send side
+    transport.finish_send().await?;
 
     // Wait briefly for the receiver to process the TransferComplete message
-    // before we drop the QUIC endpoint (which force-closes the connection).
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     progress_tx

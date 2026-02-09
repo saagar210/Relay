@@ -14,7 +14,7 @@ import (
 // newTestServer creates a test HTTP server with the WebSocket handler wired up.
 func newTestServer(t *testing.T, maxSessions int, ttl time.Duration) (*Server, *httptest.Server) {
 	t.Helper()
-	srv := NewServer(maxSessions, ttl)
+	srv := NewServer(maxSessions, ttl, 10*1024*1024)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws/{code}", srv.WebSocketHandler)
 	mux.HandleFunc("GET /health", srv.HealthHandler)

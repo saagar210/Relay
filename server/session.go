@@ -9,12 +9,16 @@ import (
 
 // Session represents a signaling session between two peers.
 type Session struct {
-	Code      string
-	Sender    *Peer
-	Receiver  *Peer
-	CreatedAt time.Time
-	ExpiresAt time.Time
-	mu        sync.Mutex
+	Code               string
+	Sender             *Peer
+	Receiver           *Peer
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	RelayActive        bool
+	SenderWantsRelay   bool
+	ReceiverWantsRelay bool
+	relayDone          chan struct{} // closed when relay loop finishes
+	mu                 sync.Mutex
 }
 
 // Peer represents one side of a signaling session.

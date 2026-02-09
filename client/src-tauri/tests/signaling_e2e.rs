@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use relay_lib::crypto::spake::KeyExchange;
 use relay_lib::network::quic::QuicEndpoint;
+use relay_lib::network::relay::RelayStream;
 use relay_lib::network::signaling::SignalingClient;
+use relay_lib::network::transport::Transport;
+use relay_lib::protocol::messages::FileInfo;
 use relay_lib::transfer::code::TransferCode;
 use relay_lib::transfer::progress::ProgressEvent;
 
@@ -76,7 +79,6 @@ struct TestServer {
 
 impl TestServer {
     fn start(binary: &PathBuf) -> Self {
-        // Use port 0 is not supported by the Go server, so pick a random high port
         let port = 10000 + (std::process::id() % 50000) as u16;
         let addr = format!("127.0.0.1:{port}");
 
@@ -90,7 +92,6 @@ impl TestServer {
             .spawn()
             .expect("failed to start signaling server");
 
-        // Give the server a moment to start
         std::thread::sleep(Duration::from_millis(500));
 
         Self {
@@ -125,7 +126,6 @@ async fn test_signaling_spake2_exchange() {
     let server = TestServer::start(&binary);
     let code = TransferCode::generate().to_code_string();
 
-    // Sender connects
     let ws_url = server.ws_url().to_string();
     let code_s = code.clone();
     let sender_task = tokio::spawn(async move {
@@ -141,10 +141,8 @@ async fn test_signaling_spake2_exchange() {
         key
     });
 
-    // Small delay to ensure sender registers first
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Receiver connects
     let ws_url = server.ws_url().to_string();
     let code_r = code.clone();
     let receiver_task = tokio::spawn(async move {
@@ -161,13 +159,7 @@ async fn test_signaling_spake2_exchange() {
     });
 
     let (sender_key, receiver_key) = tokio::join!(sender_task, receiver_task);
-    let sender_key = sender_key.unwrap();
-    let receiver_key = receiver_key.unwrap();
-
-    assert_eq!(
-        sender_key, receiver_key,
-        "sender and receiver must derive the same SPAKE2 key"
-    );
+    assert_eq!(sender_key.unwrap(), receiver_key.unwrap());
 }
 
 /// Test: Basic QUIC connectivity between two endpoints.
@@ -181,54 +173,46 @@ async fn test_quic_basic_connectivity() {
 
     let server_handle = tokio::spawn(async move {
         let conn = server_quic.accept_any().await.unwrap();
-        eprintln!("server: accepted connection from {}", conn.remote_address());
+        let (send, recv) = conn.open_bi().await.unwrap();
+        let mut transport = Transport::Direct { send, recv };
 
-        let (mut send, mut recv) = conn.open_bi().await.unwrap();
-        eprintln!("server: opened bi stream");
-
-        // Write a simple message
-        use relay_lib::protocol::messages::{self, PeerMessage, FileInfo};
-        messages::write_message(
-            &mut send,
-            &PeerMessage::FileOffer {
+        use relay_lib::protocol::messages::{FileInfo, PeerMessage};
+        transport
+            .send_peer_message(&PeerMessage::FileOffer {
                 files: vec![FileInfo {
                     name: "test.txt".into(),
                     size: 100,
                     relative_path: None,
                 }],
-            },
-        )
-        .await
-        .unwrap();
-        eprintln!("server: wrote FileOffer");
+            })
+            .await
+            .unwrap();
 
-        let response = messages::read_message(&mut recv).await.unwrap();
+        let response = transport.recv_peer_message().await.unwrap();
         eprintln!("server: got response: {:?}", response);
-        send.finish().unwrap();
+        transport.finish_send().await.unwrap();
     });
 
-    // Small delay to ensure server is accepting
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let client_quic = QuicEndpoint::new(0).await.unwrap();
     let conn = client_quic.connect(connect_addr).await.unwrap();
-    eprintln!("client: connected to {}", conn.remote_address());
+    let (send, recv) = conn.accept_bi().await.unwrap();
+    let mut transport = Transport::Direct { send, recv };
 
-    let (mut send, mut recv) = conn.accept_bi().await.unwrap();
-    eprintln!("client: accepted bi stream");
-
-    use relay_lib::protocol::messages::{self, PeerMessage};
-    let offer = messages::read_message(&mut recv).await.unwrap();
+    use relay_lib::protocol::messages::PeerMessage;
+    let offer = transport.recv_peer_message().await.unwrap();
     eprintln!("client: received: {:?}", offer);
 
-    messages::write_message(&mut send, &PeerMessage::FileDecline).await.unwrap();
-    eprintln!("client: sent FileDecline");
+    transport
+        .send_peer_message(&PeerMessage::FileDecline)
+        .await
+        .unwrap();
 
     server_handle.await.unwrap();
-    eprintln!("QUIC basic connectivity test passed!");
 }
 
-/// Test: Full end-to-end file transfer through signaling server.
+/// Test: Full end-to-end file transfer through signaling server (QUIC direct).
 #[tokio::test]
 async fn test_full_file_transfer() {
     let _ = tracing_subscriber::fmt()
@@ -245,161 +229,438 @@ async fn test_full_file_transfer() {
     let server = TestServer::start(&binary);
     let code = TransferCode::generate().to_code_string();
 
-    // Create a temp file to send
     let temp_dir = tempfile::tempdir().unwrap();
     let send_file = temp_dir.path().join("test-file.txt");
     let test_data = "Hello from Relay! This is a test file for end-to-end transfer.\n".repeat(100);
     std::fs::write(&send_file, &test_data).unwrap();
 
-    // Create a temp dir to receive into
     let recv_dir = tempfile::tempdir().unwrap();
-
     let ws_url = server.ws_url().to_string();
 
-    // Sender side
+    // Sender
     let code_s = code.clone();
     let ws_url_s = ws_url.clone();
     let send_file_clone = send_file.clone();
     let sender_handle = tokio::spawn(async move {
-        // Set up QUIC endpoint
         let quic = QuicEndpoint::new(0).await.unwrap();
         let local_addr = quic.local_addr().unwrap();
-        // For localhost testing, register with 127.0.0.1 explicitly
         let register_addr: SocketAddr =
             format!("127.0.0.1:{}", local_addr.port()).parse().unwrap();
 
-        // Connect to signaling
         let mut signaling = SignalingClient::connect(&ws_url_s, &code_s).await.unwrap();
         signaling
             .register("sender", Some(register_addr))
             .await
             .unwrap();
-
         let _peer = signaling.wait_for_peer().await.unwrap();
 
-        // SPAKE2 exchange
         let kx = KeyExchange::new(&code_s);
         let outbound = kx.outbound_message().to_vec();
         let peer_msg = signaling.exchange_spake2(&outbound).await.unwrap();
         let key = kx.finish(&peer_msg).unwrap();
 
-        // Cert fingerprint exchange
         let _peer_fp = signaling
             .exchange_cert_fingerprint(&quic.cert_fingerprint(), &key)
             .await
             .unwrap();
-
         signaling.disconnect().await.unwrap();
 
-        eprintln!("SENDER KEY: {:?}", &key[..8]);
-        eprintln!("SENDER QUIC ADDR: {}", local_addr);
-
-        // Small delay to allow receiver to also finish signaling
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Run send pipeline
-        let (progress_tx, _progress_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+        // Accept QUIC connection and create transport
+        let conn = quic.accept_any().await.unwrap();
+        let (send, recv) = conn.open_bi().await.unwrap();
+        let mut transport = Transport::Direct { send, recv };
+
+        let file_meta = tokio::fs::metadata(&send_file_clone).await.unwrap();
+        let file_infos = vec![FileInfo {
+            name: "test-file.txt".into(),
+            size: file_meta.len(),
+            relative_path: None,
+        }];
+
+        let (progress_tx, _) = mpsc::unbounded_channel::<ProgressEvent>();
         let cancel = CancellationToken::new();
 
-        eprintln!("SENDER: starting run_send, waiting for QUIC connection on port {}", local_addr.port());
-        let result = relay_lib::transfer::sender::run_send(
+        relay_lib::transfer::sender::run_send(
             vec![send_file_clone],
-            &quic,
+            file_infos,
+            &mut transport,
             key,
             progress_tx,
             cancel,
         )
-        .await;
-        if let Err(e) = &result {
-            eprintln!("SENDER ERROR: {e}");
-        }
-        result.unwrap();
+        .await
+        .unwrap();
     });
 
-    // Small delay for sender to register
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Receiver side
+    // Receiver
     let code_r = code.clone();
     let ws_url_r = ws_url.clone();
     let recv_path = recv_dir.path().to_path_buf();
     let receiver_handle = tokio::spawn(async move {
-        // Connect to signaling
         let mut signaling = SignalingClient::connect(&ws_url_r, &code_r).await.unwrap();
         signaling.register("receiver", None).await.unwrap();
-
         let peer_info = signaling.wait_for_peer().await.unwrap();
 
-        // SPAKE2 exchange
         let kx = KeyExchange::new(&code_r);
         let outbound = kx.outbound_message().to_vec();
         let peer_msg = signaling.exchange_spake2(&outbound).await.unwrap();
         let key = kx.finish(&peer_msg).unwrap();
 
-        // Cert fingerprint exchange
         let quic = QuicEndpoint::new(0).await.unwrap();
         let _peer_fp = signaling
             .exchange_cert_fingerprint(&quic.cert_fingerprint(), &key)
             .await
             .unwrap();
-
         signaling.disconnect().await.unwrap();
 
-        eprintln!("RECEIVER KEY: {:?}", &key[..8]);
-        eprintln!("PEER INFO: {:?}", peer_info);
-
-        // Resolve sender address
-        let sender_addr: SocketAddr = if !peer_info.local_ip.is_empty() && peer_info.local_port > 0
-        {
+        let sender_addr: SocketAddr =
             format!("{}:{}", peer_info.local_ip, peer_info.local_port)
                 .parse()
-                .unwrap()
-        } else {
-            panic!("no sender address from signaling");
-        };
+                .unwrap();
 
-        // Run receive pipeline with auto-accept
-        let (progress_tx, _progress_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+        let conn = quic.connect(sender_addr).await.unwrap();
+        let (send, recv) = conn.accept_bi().await.unwrap();
+        let mut transport = Transport::Direct { send, recv };
+
+        let (progress_tx, _) = mpsc::unbounded_channel::<ProgressEvent>();
         let (accept_tx, accept_rx) = oneshot::channel::<bool>();
         let cancel = CancellationToken::new();
 
-        // Auto-accept the transfer in a separate task
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
             let _ = accept_tx.send(true);
         });
 
-        eprintln!("RECEIVER: connecting to sender at {sender_addr}");
-        let result = relay_lib::transfer::receiver::run_receive(
+        relay_lib::transfer::receiver::run_receive(
             recv_path.clone(),
-            &quic,
-            sender_addr,
+            &mut transport,
             key,
             progress_tx,
             accept_rx,
             cancel,
         )
-        .await;
-        if let Err(e) = &result {
-            eprintln!("RECEIVER ERROR: {e}");
-        }
-        result.unwrap();
+        .await
+        .unwrap();
 
         recv_path
     });
 
-    // Wait for both to complete
     let (sender_result, receiver_result) = tokio::join!(sender_handle, receiver_handle);
     sender_result.unwrap();
     let recv_path = receiver_result.unwrap();
 
-    // Verify the received file
     let received_file = recv_path.join("test-file.txt");
     assert!(received_file.exists(), "received file should exist");
-
     let received_data = std::fs::read_to_string(&received_file).unwrap();
-    assert_eq!(
-        received_data, test_data,
-        "received file content must match original"
-    );
+    assert_eq!(received_data, test_data);
+}
+
+/// Test: Relay fallback — force relay mode (skip QUIC), transfer file, verify integrity.
+#[tokio::test]
+async fn test_relay_fallback() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("relay=debug,quinn=info")
+        .try_init();
+    let binary = match find_server_binary() {
+        Some(b) => b,
+        None => {
+            eprintln!("SKIP: Go signaling server binary not found");
+            return;
+        }
+    };
+
+    let server = TestServer::start(&binary);
+    let code = TransferCode::generate().to_code_string();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let send_file = temp_dir.path().join("relay-test.txt");
+    let test_data = "Relay fallback test data — verifying integrity through the relay server.\n"
+        .repeat(50);
+    std::fs::write(&send_file, &test_data).unwrap();
+
+    let recv_dir = tempfile::tempdir().unwrap();
+    let ws_url = server.ws_url().to_string();
+
+    // Sender: connect via signaling, then request relay directly (skip QUIC)
+    let code_s = code.clone();
+    let ws_url_s = ws_url.clone();
+    let send_file_clone = send_file.clone();
+    let sender_handle = tokio::spawn(async move {
+        let mut signaling = SignalingClient::connect(&ws_url_s, &code_s).await.unwrap();
+        signaling.register("sender", None).await.unwrap();
+        let _peer = signaling.wait_for_peer().await.unwrap();
+
+        let kx = KeyExchange::new(&code_s);
+        let outbound = kx.outbound_message().to_vec();
+        let peer_msg = signaling.exchange_spake2(&outbound).await.unwrap();
+        let key = kx.finish(&peer_msg).unwrap();
+
+        // Skip cert fingerprint exchange — not needed for relay
+        // Both sides immediately request relay
+
+        signaling.request_relay().await.unwrap();
+
+        let ws = signaling.into_ws();
+        let mut transport = Transport::Relayed {
+            ws: RelayStream::new(ws),
+        };
+
+        let file_meta = tokio::fs::metadata(&send_file_clone).await.unwrap();
+        let file_infos = vec![FileInfo {
+            name: "relay-test.txt".into(),
+            size: file_meta.len(),
+            relative_path: None,
+        }];
+
+        let (progress_tx, _) = mpsc::unbounded_channel::<ProgressEvent>();
+        let cancel = CancellationToken::new();
+
+        relay_lib::transfer::sender::run_send(
+            vec![send_file_clone],
+            file_infos,
+            &mut transport,
+            key,
+            progress_tx,
+            cancel,
+        )
+        .await
+        .unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Receiver: same — connect, request relay
+    let code_r = code.clone();
+    let ws_url_r = ws_url.clone();
+    let recv_path = recv_dir.path().to_path_buf();
+    let receiver_handle = tokio::spawn(async move {
+        let mut signaling = SignalingClient::connect(&ws_url_r, &code_r).await.unwrap();
+        signaling.register("receiver", None).await.unwrap();
+        let _peer = signaling.wait_for_peer().await.unwrap();
+
+        let kx = KeyExchange::new(&code_r);
+        let outbound = kx.outbound_message().to_vec();
+        let peer_msg = signaling.exchange_spake2(&outbound).await.unwrap();
+        let key = kx.finish(&peer_msg).unwrap();
+
+        signaling.request_relay().await.unwrap();
+
+        let ws = signaling.into_ws();
+        let mut transport = Transport::Relayed {
+            ws: RelayStream::new(ws),
+        };
+
+        let (progress_tx, _) = mpsc::unbounded_channel::<ProgressEvent>();
+        let (accept_tx, accept_rx) = oneshot::channel::<bool>();
+        let cancel = CancellationToken::new();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = accept_tx.send(true);
+        });
+
+        relay_lib::transfer::receiver::run_receive(
+            recv_path.clone(),
+            &mut transport,
+            key,
+            progress_tx,
+            accept_rx,
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        recv_path
+    });
+
+    let (sender_result, receiver_result) = tokio::join!(sender_handle, receiver_handle);
+    sender_result.unwrap();
+    let recv_path = receiver_result.unwrap();
+
+    let received_file = recv_path.join("relay-test.txt");
+    assert!(received_file.exists(), "received file should exist");
+    let received_data = std::fs::read_to_string(&received_file).unwrap();
+    assert_eq!(received_data, test_data, "file content must match through relay");
+}
+
+/// Test: Folder transfer — create nested temp directory, transfer via QUIC, verify structure.
+#[tokio::test]
+async fn test_folder_transfer() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("relay=debug,quinn=info")
+        .try_init();
+    let binary = match find_server_binary() {
+        Some(b) => b,
+        None => {
+            eprintln!("SKIP: Go signaling server binary not found");
+            return;
+        }
+    };
+
+    let server = TestServer::start(&binary);
+    let code = TransferCode::generate().to_code_string();
+
+    // Create a nested temp directory to send
+    let send_dir = tempfile::tempdir().unwrap();
+    let root = send_dir.path().join("my-project");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(root.join("README.md"), "# My Project\n").unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(root.join("docs/guide.md"), "# Guide\nHello\n").unwrap();
+    // Hidden files should be skipped
+    std::fs::write(root.join(".DS_Store"), "junk").unwrap();
+
+    let recv_dir = tempfile::tempdir().unwrap();
+    let ws_url = server.ws_url().to_string();
+
+    // Expand the directory into files + infos
+    let (files, file_infos) = {
+        use relay_lib::commands::send::expand_directory;
+        let expanded = expand_directory(&root, "my-project").await.unwrap();
+
+        let mut paths = Vec::new();
+        let mut infos = Vec::new();
+        for (path, rel) in expanded {
+            let meta = std::fs::metadata(&path).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            infos.push(FileInfo {
+                name,
+                size: meta.len(),
+                relative_path: Some(rel),
+            });
+            paths.push(path);
+        }
+        (paths, infos)
+    };
+
+    assert_eq!(files.len(), 3, "should have 3 files (not .DS_Store)");
+
+    // Sender
+    let code_s = code.clone();
+    let ws_url_s = ws_url.clone();
+    let files_s = files.clone();
+    let infos_s = file_infos.clone();
+    let sender_handle = tokio::spawn(async move {
+        let quic = QuicEndpoint::new(0).await.unwrap();
+        let local_addr = quic.local_addr().unwrap();
+        let register_addr: SocketAddr =
+            format!("127.0.0.1:{}", local_addr.port()).parse().unwrap();
+
+        let mut signaling = SignalingClient::connect(&ws_url_s, &code_s).await.unwrap();
+        signaling
+            .register("sender", Some(register_addr))
+            .await
+            .unwrap();
+        let _peer = signaling.wait_for_peer().await.unwrap();
+
+        let kx = KeyExchange::new(&code_s);
+        let outbound = kx.outbound_message().to_vec();
+        let peer_msg = signaling.exchange_spake2(&outbound).await.unwrap();
+        let key = kx.finish(&peer_msg).unwrap();
+
+        let _peer_fp = signaling
+            .exchange_cert_fingerprint(&quic.cert_fingerprint(), &key)
+            .await
+            .unwrap();
+        signaling.disconnect().await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let conn = quic.accept_any().await.unwrap();
+        let (send, recv) = conn.open_bi().await.unwrap();
+        let mut transport = Transport::Direct { send, recv };
+
+        let (progress_tx, _) = mpsc::unbounded_channel::<ProgressEvent>();
+        let cancel = CancellationToken::new();
+
+        relay_lib::transfer::sender::run_send(
+            files_s,
+            infos_s,
+            &mut transport,
+            key,
+            progress_tx,
+            cancel,
+        )
+        .await
+        .unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Receiver
+    let code_r = code.clone();
+    let ws_url_r = ws_url.clone();
+    let recv_path = recv_dir.path().to_path_buf();
+    let receiver_handle = tokio::spawn(async move {
+        let mut signaling = SignalingClient::connect(&ws_url_r, &code_r).await.unwrap();
+        signaling.register("receiver", None).await.unwrap();
+        let peer_info = signaling.wait_for_peer().await.unwrap();
+
+        let kx = KeyExchange::new(&code_r);
+        let outbound = kx.outbound_message().to_vec();
+        let peer_msg = signaling.exchange_spake2(&outbound).await.unwrap();
+        let key = kx.finish(&peer_msg).unwrap();
+
+        let quic = QuicEndpoint::new(0).await.unwrap();
+        let _peer_fp = signaling
+            .exchange_cert_fingerprint(&quic.cert_fingerprint(), &key)
+            .await
+            .unwrap();
+        signaling.disconnect().await.unwrap();
+
+        let sender_addr: SocketAddr =
+            format!("{}:{}", peer_info.local_ip, peer_info.local_port)
+                .parse()
+                .unwrap();
+
+        let conn = quic.connect(sender_addr).await.unwrap();
+        let (send, recv) = conn.accept_bi().await.unwrap();
+        let mut transport = Transport::Direct { send, recv };
+
+        let (progress_tx, _) = mpsc::unbounded_channel::<ProgressEvent>();
+        let (accept_tx, accept_rx) = oneshot::channel::<bool>();
+        let cancel = CancellationToken::new();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = accept_tx.send(true);
+        });
+
+        relay_lib::transfer::receiver::run_receive(
+            recv_path.clone(),
+            &mut transport,
+            key,
+            progress_tx,
+            accept_rx,
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        recv_path
+    });
+
+    let (sender_result, receiver_result) = tokio::join!(sender_handle, receiver_handle);
+    sender_result.unwrap();
+    let recv_path = receiver_result.unwrap();
+
+    // Verify directory structure was preserved
+    let readme = recv_path.join("my-project/README.md");
+    let main_rs = recv_path.join("my-project/src/main.rs");
+    let guide = recv_path.join("my-project/docs/guide.md");
+    let ds_store = recv_path.join("my-project/.DS_Store");
+
+    assert!(readme.exists(), "README.md should exist at {}", readme.display());
+    assert!(main_rs.exists(), "src/main.rs should exist at {}", main_rs.display());
+    assert!(guide.exists(), "docs/guide.md should exist at {}", guide.display());
+    assert!(!ds_store.exists(), ".DS_Store should NOT exist");
+
+    assert_eq!(std::fs::read_to_string(&readme).unwrap(), "# My Project\n");
+    assert_eq!(std::fs::read_to_string(&main_rs).unwrap(), "fn main() {}\n");
+    assert_eq!(std::fs::read_to_string(&guide).unwrap(), "# Guide\nHello\n");
 }

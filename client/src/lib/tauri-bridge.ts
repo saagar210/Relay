@@ -10,6 +10,7 @@ export interface SendStarted {
 export interface FileOfferInfo {
   name: string;
   size: number;
+  relativePath?: string;
 }
 
 export interface TransferProgress {
@@ -51,13 +52,19 @@ export interface StateChangedEvent {
   state: string;
 }
 
+export interface ConnectionTypeChangedEvent {
+  type: "connectionTypeChanged";
+  connection_type: string;
+}
+
 export type ProgressEvent =
   | TransferProgress
   | TransferCompleteEvent
   | FileOfferEvent
   | FileCompletedEvent
   | ErrorEvent
-  | StateChangedEvent;
+  | StateChangedEvent
+  | ConnectionTypeChangedEvent;
 
 export async function startSend(
   filePaths: string[],
