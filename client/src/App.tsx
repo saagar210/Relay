@@ -1,4 +1,4 @@
-import { onMount, onCleanup, Switch, Match } from "solid-js";
+import { createSignal, onMount, onCleanup, Switch, Match } from "solid-js";
 import { transfer, setTransfer, resetTransfer } from "./stores/transfer";
 import { onTransferProgress, type ProgressEvent } from "./lib/tauri-bridge";
 import SendView from "./components/SendView";
@@ -6,10 +6,12 @@ import ReceiveView from "./components/ReceiveView";
 import TransferProgress from "./components/TransferProgress";
 import CompletionView from "./components/CompletionView";
 import ConnectionStatus from "./components/ConnectionStatus";
+import Settings from "./components/Settings";
 import "./styles/app.css";
 
 export default function App() {
   let unlisten: (() => void) | undefined;
+  const [showSettings, setShowSettings] = createSignal(false);
 
   onMount(async () => {
     unlisten = await onTransferProgress(handleProgressEvent);
@@ -60,7 +62,14 @@ export default function App() {
       case "stateChanged":
         if (event.state === "connecting") {
           setTransfer("phase", "connecting");
+          setTransfer("connectionType", "negotiating");
         }
+        break;
+      case "connectionTypeChanged":
+        setTransfer(
+          "connectionType",
+          event.connection_type === "relay" ? "relay" : "direct"
+        );
         break;
     }
   }
@@ -69,8 +78,11 @@ export default function App() {
     <div class="flex flex-col h-screen bg-[#0a0a0a] text-[#f5f5f5]">
       <main class="flex-1 flex items-center justify-center p-6 overflow-auto">
         <Switch>
+          <Match when={showSettings()}>
+            <Settings onClose={() => setShowSettings(false)} />
+          </Match>
           <Match when={transfer.phase === "idle"}>
-            <HomeScreen />
+            <HomeScreen onOpenSettings={() => setShowSettings(true)} />
           </Match>
           <Match
             when={
@@ -104,9 +116,17 @@ export default function App() {
   );
 }
 
-function HomeScreen() {
+function HomeScreen(props: { onOpenSettings: () => void }) {
   return (
     <div class="text-center space-y-8 max-w-md">
+      <div class="flex justify-end">
+        <button
+          class="text-sm text-[#a0a0a0] hover:text-white transition-colors"
+          onClick={props.onOpenSettings}
+        >
+          Settings
+        </button>
+      </div>
       <div class="space-y-2">
         <h1 class="text-4xl font-bold tracking-tight">Relay</h1>
         <p class="text-[#a0a0a0] text-lg">
