@@ -54,7 +54,7 @@ export interface StateChangedEvent {
 
 export interface ConnectionTypeChangedEvent {
   type: "connectionTypeChanged";
-  connection_type: string;
+  connection_type: "direct" | "relay";
 }
 
 export type ProgressEvent =

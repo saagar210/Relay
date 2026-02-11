@@ -40,7 +40,7 @@ export interface TransferStore {
   progress: TransferProgress;
   summary: TransferSummary;
   error: string;
-  connectionType: "direct" | "relayed";
+  connectionType: "direct" | "relay" | "negotiating";
 }
 
 const defaultProgress: TransferProgress = {
@@ -71,7 +71,7 @@ export const [transfer, setTransfer] = createStore<TransferStore>({
   progress: { ...defaultProgress },
   summary: { ...defaultSummary },
   error: "",
-  connectionType: "direct",
+  connectionType: "negotiating",
 });
 
 export function resetTransfer() {
@@ -86,6 +86,6 @@ export function resetTransfer() {
     progress: { ...defaultProgress },
     summary: { ...defaultSummary },
     error: "",
-    connectionType: "direct",
+    connectionType: "negotiating",
   });
 }

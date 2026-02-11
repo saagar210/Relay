@@ -7,23 +7,25 @@ export default function ConnectionStatus() {
     transfer.phase === "connecting" ||
     transfer.phase === "waiting";
 
+  const indicatorClass = () => {
+    if (transfer.connectionType === "direct") return "bg-[#22c55e]";
+    if (transfer.connectionType === "relay") return "bg-[#eab308]";
+    return "bg-[#6b7280]";
+  };
+
+  const connectionLabel = () => {
+    if (transfer.connectionType === "direct") return "Direct P2P";
+    if (transfer.connectionType === "relay") return "Relay";
+    return "Negotiating";
+  };
+
   return (
     <Show when={isActive()}>
       <div class="flex items-center justify-between px-4 py-2 bg-[#0f0f0f] border-t border-[#1e1e1e] text-xs text-[#a0a0a0]">
         <div class="flex items-center gap-4">
           <div class="flex items-center gap-1.5">
-            <div
-              class={`w-2 h-2 rounded-full ${
-                transfer.connectionType === "direct"
-                  ? "bg-[#22c55e]"
-                  : "bg-[#eab308]"
-              }`}
-            />
-            <span>
-              {transfer.connectionType === "direct"
-                ? "Direct P2P"
-                : "Relayed"}
-            </span>
+            <div class={`w-2 h-2 rounded-full ${indicatorClass()}`} />
+            <span>{connectionLabel()}</span>
           </div>
           <div class="flex items-center gap-1.5">
             <span>AES-256-GCM</span>
