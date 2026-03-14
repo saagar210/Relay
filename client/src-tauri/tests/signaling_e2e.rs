@@ -15,6 +15,7 @@ use relay_lib::network::relay::RelayStream;
 use relay_lib::network::signaling::SignalingClient;
 use relay_lib::network::transport::Transport;
 use relay_lib::protocol::messages::FileInfo;
+use relay_lib::protocol::version::CURRENT_PROTOCOL_VERSION;
 use relay_lib::transfer::code::TransferCode;
 use relay_lib::transfer::progress::ProgressEvent;
 
@@ -23,6 +24,28 @@ use tokio_util::sync::CancellationToken;
 
 /// Find or build the Go signaling server binary.
 fn find_server_binary() -> Option<PathBuf> {
+    // Always rebuild first so e2e tests exercise current server source.
+    let server_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("server");
+    let rebuilt_path = server_dir.join("relay-server");
+
+    if let Ok(status) = Command::new("go")
+        .arg("build")
+        .arg("-o")
+        .arg("relay-server")
+        .arg(".")
+        .current_dir(&server_dir)
+        .status()
+    {
+        if status.success() && rebuilt_path.exists() {
+            return Some(rebuilt_path);
+        }
+    }
+
     // Check env var first
     if let Ok(path) = std::env::var("RELAY_SERVER_BIN") {
         let p = PathBuf::from(path);
@@ -44,30 +67,6 @@ fn find_server_binary() -> Option<PathBuf> {
         return Some(default_path);
     }
 
-    // Try to build it
-    let server_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("server");
-
-    let status = Command::new("go")
-        .arg("build")
-        .arg("-o")
-        .arg("relay-server")
-        .arg(".")
-        .current_dir(&server_dir)
-        .status()
-        .ok()?;
-
-    if status.success() {
-        let path = server_dir.join("relay-server");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
     None
 }
 
@@ -79,8 +78,13 @@ struct TestServer {
 
 impl TestServer {
     fn start(binary: &PathBuf) -> Self {
-        let port = 10000 + (std::process::id() % 50000) as u16;
-        let addr = format!("127.0.0.1:{port}");
+        let probe = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("failed to reserve an ephemeral port for test server");
+        let addr = probe
+            .local_addr()
+            .expect("failed to read reserved ephemeral port");
+        drop(probe);
+        let addr = format!("127.0.0.1:{}", addr.port());
 
         let child = Command::new(binary)
             .arg("-addr")
@@ -167,9 +171,7 @@ async fn test_signaling_spake2_exchange() {
 async fn test_quic_basic_connectivity() {
     let server_quic = QuicEndpoint::new(0).await.unwrap();
     let server_addr = server_quic.local_addr().unwrap();
-    let connect_addr: SocketAddr = format!("127.0.0.1:{}", server_addr.port())
-        .parse()
-        .unwrap();
+    let connect_addr: SocketAddr = format!("127.0.0.1:{}", server_addr.port()).parse().unwrap();
 
     let server_handle = tokio::spawn(async move {
         let conn = server_quic.accept_any().await.unwrap();
@@ -179,6 +181,7 @@ async fn test_quic_basic_connectivity() {
         use relay_lib::protocol::messages::{FileInfo, PeerMessage};
         transport
             .send_peer_message(&PeerMessage::FileOffer {
+                protocol_version: Some(CURRENT_PROTOCOL_VERSION.to_string()),
                 files: vec![FileInfo {
                     name: "test.txt".into(),
                     size: 100,
@@ -244,8 +247,7 @@ async fn test_full_file_transfer() {
     let sender_handle = tokio::spawn(async move {
         let quic = QuicEndpoint::new(0).await.unwrap();
         let local_addr = quic.local_addr().unwrap();
-        let register_addr: SocketAddr =
-            format!("127.0.0.1:{}", local_addr.port()).parse().unwrap();
+        let register_addr: SocketAddr = format!("127.0.0.1:{}", local_addr.port()).parse().unwrap();
 
         let mut signaling = SignalingClient::connect(&ws_url_s, &code_s).await.unwrap();
         signaling
@@ -317,10 +319,9 @@ async fn test_full_file_transfer() {
             .unwrap();
         signaling.disconnect().await.unwrap();
 
-        let sender_addr: SocketAddr =
-            format!("{}:{}", peer_info.local_ip, peer_info.local_port)
-                .parse()
-                .unwrap();
+        let sender_addr: SocketAddr = format!("{}:{}", peer_info.local_ip, peer_info.local_port)
+            .parse()
+            .unwrap();
 
         let conn = quic.connect(sender_addr).await.unwrap();
         let (send, recv) = conn.accept_bi().await.unwrap();
@@ -336,6 +337,7 @@ async fn test_full_file_transfer() {
         });
 
         relay_lib::transfer::receiver::run_receive(
+            "test-full-file-transfer".to_string(),
             recv_path.clone(),
             &mut transport,
             key,
@@ -378,8 +380,8 @@ async fn test_relay_fallback() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     let send_file = temp_dir.path().join("relay-test.txt");
-    let test_data = "Relay fallback test data — verifying integrity through the relay server.\n"
-        .repeat(50);
+    let test_data =
+        "Relay fallback test data — verifying integrity through the relay server.\n".repeat(50);
     std::fs::write(&send_file, &test_data).unwrap();
 
     let recv_dir = tempfile::tempdir().unwrap();
@@ -464,6 +466,7 @@ async fn test_relay_fallback() {
         });
 
         relay_lib::transfer::receiver::run_receive(
+            "test-relay-fallback".to_string(),
             recv_path.clone(),
             &mut transport,
             key,
@@ -484,7 +487,10 @@ async fn test_relay_fallback() {
     let received_file = recv_path.join("relay-test.txt");
     assert!(received_file.exists(), "received file should exist");
     let received_data = std::fs::read_to_string(&received_file).unwrap();
-    assert_eq!(received_data, test_data, "file content must match through relay");
+    assert_eq!(
+        received_data, test_data,
+        "file content must match through relay"
+    );
 }
 
 /// Test: Folder transfer — create nested temp directory, transfer via QUIC, verify structure.
@@ -548,8 +554,7 @@ async fn test_folder_transfer() {
     let sender_handle = tokio::spawn(async move {
         let quic = QuicEndpoint::new(0).await.unwrap();
         let local_addr = quic.local_addr().unwrap();
-        let register_addr: SocketAddr =
-            format!("127.0.0.1:{}", local_addr.port()).parse().unwrap();
+        let register_addr: SocketAddr = format!("127.0.0.1:{}", local_addr.port()).parse().unwrap();
 
         let mut signaling = SignalingClient::connect(&ws_url_s, &code_s).await.unwrap();
         signaling
@@ -613,10 +618,9 @@ async fn test_folder_transfer() {
             .unwrap();
         signaling.disconnect().await.unwrap();
 
-        let sender_addr: SocketAddr =
-            format!("{}:{}", peer_info.local_ip, peer_info.local_port)
-                .parse()
-                .unwrap();
+        let sender_addr: SocketAddr = format!("{}:{}", peer_info.local_ip, peer_info.local_port)
+            .parse()
+            .unwrap();
 
         let conn = quic.connect(sender_addr).await.unwrap();
         let (send, recv) = conn.accept_bi().await.unwrap();
@@ -632,6 +636,7 @@ async fn test_folder_transfer() {
         });
 
         relay_lib::transfer::receiver::run_receive(
+            "test-folder-transfer".to_string(),
             recv_path.clone(),
             &mut transport,
             key,
@@ -655,9 +660,21 @@ async fn test_folder_transfer() {
     let guide = recv_path.join("my-project/docs/guide.md");
     let ds_store = recv_path.join("my-project/.DS_Store");
 
-    assert!(readme.exists(), "README.md should exist at {}", readme.display());
-    assert!(main_rs.exists(), "src/main.rs should exist at {}", main_rs.display());
-    assert!(guide.exists(), "docs/guide.md should exist at {}", guide.display());
+    assert!(
+        readme.exists(),
+        "README.md should exist at {}",
+        readme.display()
+    );
+    assert!(
+        main_rs.exists(),
+        "src/main.rs should exist at {}",
+        main_rs.display()
+    );
+    assert!(
+        guide.exists(),
+        "docs/guide.md should exist at {}",
+        guide.display()
+    );
     assert!(!ds_store.exists(), ".DS_Store should NOT exist");
 
     assert_eq!(std::fs::read_to_string(&readme).unwrap(), "# My Project\n");

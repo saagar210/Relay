@@ -13,6 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::network::transport::Transport;
 use crate::protocol::chunker::FileChunker;
 use crate::protocol::messages::{FileInfo, PeerMessage};
+use crate::protocol::version::CURRENT_PROTOCOL_VERSION;
 use crate::transfer::progress::{ProgressEvent, ProgressTracker};
 
 /// Run the sender pipeline over an established transport (QUIC or relay).
@@ -39,6 +40,7 @@ pub async fn run_send(
     // Send file offer
     transport
         .send_peer_message(&PeerMessage::FileOffer {
+            protocol_version: Some(CURRENT_PROTOCOL_VERSION.to_string()),
             files: file_infos.clone(),
         })
         .await?;

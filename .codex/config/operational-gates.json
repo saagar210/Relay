@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "protocol": {
+    "current_version": "1.1.0",
+    "compatibility_policy": "N-1 minor (same major)"
+  },
+  "release_channels": {
+    "default": "stable",
+    "channels": {
+      "internal": {
+        "ring": 0,
+        "description": "Internal canary ring for team validation",
+        "auto_update": false
+      },
+      "beta": {
+        "ring": 1,
+        "description": "Limited external rollout for early feedback",
+        "auto_update": true
+      },
+      "stable": {
+        "ring": 2,
+        "description": "General availability channel",
+        "auto_update": true
+      }
+    }
+  },
+  "gates": {
+    "g0": {
+      "name": "Hygiene",
+      "required": true
+    },
+    "g1": {
+      "name": "Fast Correctness",
+      "required": true
+    },
+    "g2": {
+      "name": "Integration E2E",
+      "required": true
+    },
+    "g3": {
+      "name": "Security Supply Chain",
+      "required": true
+    },
+    "g4": {
+      "name": "Performance Reliability",
+      "required": true
+    },
+    "g5": {
+      "name": "Release Promotion",
+      "required": true
+    },
+    "g6": {
+      "name": "Docs Closeout",
+      "required": true
+    }
+  },
+  "thresholds": {
+    "perf": {
+      "bundle_regression_ratio_max": 0.08,
+      "build_regression_ratio_max": 0.15,
+      "asset_max_bytes": 250000,
+      "api_p95_ms_max": 250,
+      "api_p99_ms_max": 700
+    },
+    "reliability": {
+      "soak_minutes_min": 60,
+      "reconnect_storm_error_rate_max": 0.01,
+      "relay_queue_drop_rate_max": 0.01
+    },
+    "security": {
+      "max_critical_vulnerabilities": 0,
+      "max_unresolved_high_vulnerabilities": 0,
+      "require_signed_artifacts": true,
+      "require_sbom": true,
+      "require_provenance": true
+    }
+  }
+}

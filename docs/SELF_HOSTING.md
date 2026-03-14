@@ -40,9 +40,9 @@ flyctl launch
 flyctl deploy
 ```
 
-**`fly.toml` configuration**:
+**Checked-in `fly.toml` example**:
 ```toml
-app = "relay-server"
+app = "relay-signal" # rename this to your own Fly app if needed
 
 [build]
   dockerfile = "Dockerfile"
@@ -130,6 +130,8 @@ sudo systemctl start relay-server
 | `RELAY_SESSION_TTL` | `10m` | Session expiration (e.g., `10m`, `1h`) |
 | `RELAY_RATE_LIMIT` | `10485760` | Relay bandwidth limit in bytes/sec (10 MB/s default) |
 
+These values are now read directly by `relay-server`, which makes the Docker and Fly examples behave the same way as the bare command-line flow.
+
 ### Command-Line Flags
 
 ```bash
@@ -139,6 +141,8 @@ sudo systemctl start relay-server
   --session-ttl=30m \
   --relay-rate-limit=52428800
 ```
+
+Command-line flags override environment variables when both are supplied.
 
 ## TLS/HTTPS Setup
 

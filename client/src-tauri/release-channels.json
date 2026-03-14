@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "default_channel": "stable",
+  "channels": {
+    "internal": {
+      "ring": 0,
+      "description": "Internal canary ring for staff-only preflight builds",
+      "update_window_hours": 24
+    },
+    "beta": {
+      "ring": 1,
+      "description": "Limited audience rollout before GA promotion",
+      "update_window_hours": 72
+    },
+    "stable": {
+      "ring": 2,
+      "description": "General availability channel for production users",
+      "update_window_hours": 168
+    }
+  }
+}

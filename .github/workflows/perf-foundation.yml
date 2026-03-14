@@ -1,0 +1,146 @@
+name: perf-foundation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master, main]
+
+jobs:
+  perf-guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+      - run: node scripts/ci/check-perf-profile.mjs foundation
+        env:
+          PERF_PROFILE: ${{ vars.PERF_PROFILE }}
+          PERF_BASE_URL: ${{ vars.PERF_BASE_URL }}
+          PERF_DATABASE_URL: ${{ vars.PERF_DATABASE_URL }}
+
+  perf-bundle:
+    needs: perf-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - run: cd client && pnpm install --frozen-lockfile
+      - run: cd client && pnpm build
+      - run: cd client && node ../scripts/perf/bundle-report.mjs
+
+  perf-build:
+    needs: perf-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - run: cd client && pnpm install --frozen-lockfile
+      - run: cd client && npm_execpath="$(command -v pnpm)" node ../scripts/perf/measure-build-time.mjs
+
+  perf-lighthouse:
+    needs: perf-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - run: cd client && pnpm install --frozen-lockfile
+      - run: cd client && pnpm build
+      - run: cd client && pnpm lighthouse
+
+  perf-assets:
+    needs: perf-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Load operational thresholds
+        run: node scripts/ci/export-operational-thresholds.mjs >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - run: cd client && pnpm install --frozen-lockfile
+      - run: cd client && pnpm build
+      - run: cd client && ASSET_MAX_BYTES="$PERF_ASSET_MAX_BYTES" bash ../scripts/perf/check-assets.sh
+
+  perf-memory:
+    needs: perf-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - run: cd client && pnpm install --frozen-lockfile
+      - run: cd client && MEMORY_MAX_DELTA_MB=5 node --expose-gc ../scripts/perf/memory-smoke.mjs
+
+  perf-api:
+    if: ${{ vars.PERF_BASE_URL != '' }}
+    needs: perf-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Load operational thresholds
+        run: node scripts/ci/export-operational-thresholds.mjs >> "$GITHUB_ENV"
+      - uses: grafana/setup-k6-action@ffe7d7290dfa715e48c2ccc924d068444c94bde2
+      - run: k6 run tests/perf/api.k6.js --summary-export=.perf-results/api-summary.json
+        env:
+          BASE_URL: ${{ vars.PERF_BASE_URL }}
+          API_P95_MS: ${{ env.PERF_API_P95_MS_MAX }}
+          API_P99_MS: ${{ env.PERF_API_P99_MS_MAX }}
+
+  perf-db:
+    if: ${{ vars.PERF_DATABASE_URL != '' }}
+    needs: perf-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: psql "${{ vars.PERF_DATABASE_URL }}" -f scripts/perf/db/check-pg-stat.sql

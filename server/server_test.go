@@ -31,6 +31,30 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestHealthEndpointTransitionalCompatibility(t *testing.T) {
+	srv := NewServer(100, 10*time.Minute, 10*1024*1024)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", srv.HealthHandler)
+	mux.HandleFunc("GET /api/health", srv.HealthHandler)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	for _, route := range []string{"/health", "/api/health"} {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+route, nil)
+		if err != nil {
+			t.Fatalf("failed to create request for %s: %v", route, err)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("health request failed for %s: %v", route, err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 from %s, got %d", route, res.StatusCode)
+		}
+		_ = res.Body.Close()
+	}
+}
+
 func TestSessionCreation(t *testing.T) {
 	srv := NewServer(100, 10*time.Minute, 10*1024*1024)
 

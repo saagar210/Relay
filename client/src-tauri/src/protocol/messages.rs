@@ -8,7 +8,11 @@ use crate::error::{AppError, AppResult};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PeerMessage {
     /// Sender → Receiver: here's what I want to send.
-    FileOffer { files: Vec<FileInfo> },
+    FileOffer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol_version: Option<String>,
+        files: Vec<FileInfo>,
+    },
 
     /// Receiver → Sender: I accept the transfer.
     FileAccept,
@@ -26,16 +30,23 @@ pub enum PeerMessage {
     },
 
     /// Sender → Receiver: file transfer complete, verify checksum.
-    FileComplete { file_index: u16, sha256: [u8; 32] },
+    FileComplete {
+        file_index: u16,
+        sha256: [u8; 32],
+    },
 
     /// Receiver → Sender: checksum verified.
-    FileVerified { file_index: u16 },
+    FileVerified {
+        file_index: u16,
+    },
 
     /// Either → Either: all files transferred successfully.
     TransferComplete,
 
     /// Either → Either: cancel the transfer.
-    Cancel { reason: String },
+    Cancel {
+        reason: String,
+    },
 
     /// Keepalive
     Ping,
@@ -107,6 +118,7 @@ mod tests {
     fn test_serialize_deserialize_all_variants() {
         let messages = vec![
             PeerMessage::FileOffer {
+                protocol_version: Some("1.1.0".into()),
                 files: vec![FileInfo {
                     name: "test.txt".into(),
                     size: 1024,

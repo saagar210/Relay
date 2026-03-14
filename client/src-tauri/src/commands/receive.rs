@@ -51,12 +51,18 @@ pub async fn start_receive(
 
     // Store session
     let store = app.state::<SessionStore>().inner().clone();
-    store.lock().await.insert(session_id.clone(), Arc::new(session));
+    store
+        .lock()
+        .await
+        .insert(session_id.clone(), Arc::new(session));
 
     // Create accept/decline channel
     let (accept_tx, accept_rx) = oneshot::channel::<bool>();
     let accept_store = app.state::<AcceptChannelStore>().inner().clone();
-    accept_store.lock().await.insert(session_id.clone(), accept_tx);
+    accept_store
+        .lock()
+        .await
+        .insert(session_id.clone(), accept_tx);
 
     let server_url = signal_server_url.unwrap_or_else(|| DEFAULT_SIGNAL_URL.into());
 
@@ -73,11 +79,13 @@ pub async fn start_receive(
     });
 
     let code_clone = code.clone();
+    let receive_session_id = session_id.clone();
 
     // Run receive pipeline
     let app_handle2 = app.clone();
     tokio::spawn(async move {
         let result = run_receive_with_signaling(
+            receive_session_id,
             save_path,
             &code_clone,
             &server_url,
@@ -111,6 +119,7 @@ pub async fn start_receive(
 /// Full receive flow with signaling server, SPAKE2 key exchange,
 /// and fallback to relay if QUIC connection fails.
 async fn run_receive_with_signaling(
+    session_id: String,
     save_dir: PathBuf,
     code: &str,
     server_url: &str,
@@ -153,7 +162,10 @@ async fn run_receive_with_signaling(
 
     let mut transport = match peer_addr {
         Ok(addr) => {
-            info!("receive: attempting QUIC connect to {addr} (timeout {}s)", RECEIVER_QUIC_TIMEOUT.as_secs());
+            info!(
+                "receive: attempting QUIC connect to {addr} (timeout {}s)",
+                RECEIVER_QUIC_TIMEOUT.as_secs()
+            );
             match tokio::time::timeout(RECEIVER_QUIC_TIMEOUT, quic.connect(addr)).await {
                 Ok(Ok(conn)) => {
                     info!("receive: direct QUIC connection established");
@@ -188,6 +200,7 @@ async fn run_receive_with_signaling(
 
     // 7. Run transfer over the established transport
     receiver::run_receive(
+        session_id,
         save_dir,
         &mut transport,
         encryption_key,
@@ -237,9 +250,7 @@ fn resolve_peer_addr(peer_info: &PeerInfo) -> Result<SocketAddr, crate::error::A
         }
     }
 
-    Err(AppError::Network(
-        "no usable address for sender".into(),
-    ))
+    Err(AppError::Network("no usable address for sender".into()))
 }
 
 /// Accept or decline an incoming file offer.

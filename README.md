@@ -19,7 +19,7 @@ Fast, secure, peer-to-peer file transfer. Direct LAN, automatic relay fallback, 
 - **Zero configuration** — No port forwarding or network setup required
 
 ### Platform
-- **Cross-platform** — macOS, Linux (Windows coming soon)
+- **Desktop-first** — macOS is the primary target today; Linux follows next
 - **Self-hostable** — Run your own signaling server (Docker, Fly.io, bare metal)
 
 ## How It Works
@@ -33,7 +33,7 @@ Fast, secure, peer-to-peer file transfer. Direct LAN, automatic relay fallback, 
 
 ## Architecture
 
-- **Client**: Tauri app (Rust backend + React/TypeScript frontend)
+- **Client**: Tauri app (Rust backend + Solid/TypeScript frontend)
 - **Server**: Go signaling server + WebSocket relay
 - **Transport**: QUIC for direct transfers, WebSocket for relay fallback
 - **Encryption**: SPAKE2 key exchange + AES-256-GCM chunk encryption
@@ -44,7 +44,7 @@ Fast, secure, peer-to-peer file transfer. Direct LAN, automatic relay fallback, 
 - Rust/Cargo
 - Go 1.22+
 - Node.js/pnpm
-- macOS/Linux (Windows support TBD)
+- macOS
 
 ### Normal dev mode: run the signaling server
 ```bash
@@ -56,8 +56,11 @@ go build -o relay-server .
 Server flags:
 - `--addr` — listen address (default: `:8080`)
 - `--max-sessions` — max concurrent sessions (default: 1000)
-- `--session-ttl` — session expiration (default: 1h)
+- `--session-ttl` — session expiration (default: 10m)
 - `--relay-rate-limit` — relay bandwidth limit in bytes/sec (default: 10 MB/s)
+
+The server also reads matching environment variables for containerized deployments:
+`RELAY_ADDR`, `RELAY_MAX_SESSIONS`, `RELAY_SESSION_TTL`, and `RELAY_RATE_LIMIT`.
 
 ### Normal dev mode: run the client
 ```bash
@@ -112,20 +115,24 @@ cd client && pnpm build
 
 ## Status
 
-✅ **Production-ready**
+⚠️ **macOS release-candidate**
 
 **Completed Phases:**
 - Phase 1: Direct QUIC transfers ✓
 - Phase 2: Signaling + key exchange ✓
 - Phase 3: Relay fallback + folders ✓
-- Phase 4: Polish + distribution ✓
+- Phase 4: Local launch + verification hardening in progress
 
-**All 43 tests passing** (26 Rust unit + 5 integration + 12 Go)
+**Current verified test count: 54 passing** (31 Rust unit + 5 integration + 18 Go)
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — System design, data flow, module responsibilities
 - [Security Model](docs/SECURITY.md) — Cryptography, threat model, vulnerability disclosure
+- [Execution Contract](docs/EXECUTION_CONTRACT.md) — Deterministic completion and verification rules
+- [Release Gates](docs/RELEASE_GATES.md) — Gate definitions (`G0`-`G6`) and promotion policy
+- [Release Readiness Hub](docs/release/README.md) — Channel policy, rollback, and canary decision templates
+- [Local macOS Smoke Checklist](docs/LOCAL_SMOKE.md) — Human validation flow for launch-critical behavior
 - [Self-Hosting Guide](docs/SELF_HOSTING.md) — Deploy your own signaling server
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and debugging
 
@@ -152,7 +159,8 @@ See [Self-Hosting Guide](docs/SELF_HOSTING.md) for full details.
 
 GitHub Actions automatically:
 - Runs tests on every push
-- Builds platform-specific releases (macOS, Linux)
+- Enforces hard-fail vulnerability scanning on supported branches
+- Builds release artifacts for the supported desktop targets in scope
 - Publishes Docker images on release tags
 
 ## Contributing

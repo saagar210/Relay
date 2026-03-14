@@ -59,7 +59,10 @@ pub async fn start_send(
 
     // Store session
     let store = app.state::<SessionStore>().inner().clone();
-    store.lock().await.insert(session_id.clone(), Arc::new(session));
+    store
+        .lock()
+        .await
+        .insert(session_id.clone(), Arc::new(session));
 
     // Set up QUIC endpoint (OS-assigned port)
     let quic = QuicEndpoint::new(0).await.map_err(|e| e.to_string())?;
@@ -251,7 +254,15 @@ async fn run_send_with_signaling(
     let (files, file_infos) = expand_paths(&input_paths).await?;
 
     // 8. Run transfer over the established transport
-    sender::run_send(files, file_infos, &mut transport, encryption_key, progress_tx, cancel).await
+    sender::run_send(
+        files,
+        file_infos,
+        &mut transport,
+        encryption_key,
+        progress_tx,
+        cancel,
+    )
+    .await
 }
 
 /// Expand input paths: directories become their recursive file listing,

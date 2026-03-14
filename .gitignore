@@ -7,6 +7,9 @@ target/
 node_modules/
 dist/
 .pnpm-debug.log
+.perf-results/
+client/.perf-results/
+client/.lighthouseci/
 
 # OS
 .DS_Store

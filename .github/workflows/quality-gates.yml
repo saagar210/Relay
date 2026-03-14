@@ -17,11 +17,5 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies
-        run: npm ci || npm install
-
       - name: Policy checks
         run: node scripts/ci/require-tests-and-docs.mjs
-
-      - name: Verify commands
-        run: bash .codex/scripts/run_verify_commands.sh

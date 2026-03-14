@@ -58,6 +58,9 @@ func TestRelayRequest(t *testing.T) {
 	if msg.Type != "relay_request" {
 		t.Errorf("expected relay_request, got %s", msg.Type)
 	}
+	if msg.ProtocolVersion != signalingProtocolVersion {
+		t.Errorf("expected protocol_version %s, got %s", signalingProtocolVersion, msg.ProtocolVersion)
+	}
 
 	// Receiver also requests relay
 	if err := receiver.WriteJSON(SignalMessage{Type: "relay_request"}); err != nil {
@@ -69,10 +72,16 @@ func TestRelayRequest(t *testing.T) {
 	if sMsg.Type != "relay_active" {
 		t.Errorf("sender expected relay_active, got %s", sMsg.Type)
 	}
+	if sMsg.ProtocolVersion != signalingProtocolVersion {
+		t.Errorf("sender expected protocol_version %s, got %s", signalingProtocolVersion, sMsg.ProtocolVersion)
+	}
 
 	rMsg := readMsg(t, receiver)
 	if rMsg.Type != "relay_active" {
 		t.Errorf("receiver expected relay_active, got %s", rMsg.Type)
+	}
+	if rMsg.ProtocolVersion != signalingProtocolVersion {
+		t.Errorf("receiver expected protocol_version %s, got %s", signalingProtocolVersion, rMsg.ProtocolVersion)
 	}
 
 	// Both send relay_ready to acknowledge

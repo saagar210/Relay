@@ -24,8 +24,8 @@ impl QuicEndpoint {
         let subject_alt_names = vec!["relay.local".to_string()];
         let cert_params = rcgen::CertificateParams::new(subject_alt_names)
             .map_err(|e| AppError::Crypto(format!("cert params: {e}")))?;
-        let key_pair = rcgen::KeyPair::generate()
-            .map_err(|e| AppError::Crypto(format!("keygen: {e}")))?;
+        let key_pair =
+            rcgen::KeyPair::generate().map_err(|e| AppError::Crypto(format!("keygen: {e}")))?;
         let cert = cert_params
             .self_signed(&key_pair)
             .map_err(|e| AppError::Crypto(format!("self-sign: {e}")))?;
@@ -55,7 +55,9 @@ impl QuicEndpoint {
 
         info!(
             "QUIC endpoint listening on {}",
-            endpoint.local_addr().map_err(|e| AppError::Network(e.to_string()))?
+            endpoint
+                .local_addr()
+                .map_err(|e| AppError::Network(e.to_string()))?
         );
 
         Ok(Self {

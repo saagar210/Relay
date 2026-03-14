@@ -10,10 +10,14 @@ use crate::error::{AppError, AppResult};
 use crate::network::transport::Transport;
 use crate::protocol::messages::PeerMessage;
 use crate::protocol::reassembler::FileReassembler;
+use crate::protocol::version::{
+    is_peer_protocol_compatible, COMPATIBILITY_POLICY, CURRENT_PROTOCOL_VERSION,
+};
 use crate::transfer::progress::{FileOfferInfo, ProgressEvent, ProgressTracker};
 
 /// Run the receiver pipeline over an established transport (QUIC or relay).
 pub async fn run_receive(
+    session_id: String,
     save_dir: PathBuf,
     transport: &mut Transport,
     encryption_key: [u8; 32],
@@ -31,7 +35,22 @@ pub async fn run_receive(
     // Receive file offer
     let offer = transport.recv_peer_message().await?;
     let files = match offer {
-        PeerMessage::FileOffer { files } => files,
+        PeerMessage::FileOffer {
+            protocol_version,
+            files,
+        } => {
+            if let Some(peer_version) = protocol_version.as_deref() {
+                if !is_peer_protocol_compatible(peer_version) {
+                    return Err(AppError::Transfer(format!(
+                        "incompatible peer protocol version '{peer_version}' (local {CURRENT_PROTOCOL_VERSION}, policy {COMPATIBILITY_POLICY})"
+                    )));
+                }
+            } else {
+                // Legacy peers may not send version metadata yet.
+                warn!("receiver: peer protocol_version missing; proceeding in legacy-compat mode");
+            }
+            files
+        }
         _ => return Err(AppError::Transfer("expected FileOffer message".into())),
     };
 
@@ -48,7 +67,7 @@ pub async fn run_receive(
         .collect();
     progress_tx
         .send(ProgressEvent::FileOffer {
-            session_id: String::new(), // filled by command layer
+            session_id,
             files: offer_infos,
         })
         .ok();
@@ -144,7 +163,11 @@ pub async fn run_receive(
                     .ok_or_else(|| AppError::Transfer("file already completed".into()))?;
 
                 // data.len() before decryption includes the auth tag (16 bytes)
-                let plaintext_size = if data.len() > 16 { data.len() - 16 } else { data.len() };
+                let plaintext_size = if data.len() > 16 {
+                    data.len() - 16
+                } else {
+                    data.len()
+                };
                 reassembler.write_chunk(&data, &nonce).await?;
 
                 tracker.update(plaintext_size as u64);
@@ -159,10 +182,7 @@ pub async fn run_receive(
                     })
                     .ok();
             }
-            PeerMessage::FileComplete {
-                file_index,
-                sha256,
-            } => {
+            PeerMessage::FileComplete { file_index, sha256 } => {
                 let idx = file_index as usize;
                 let reassembler = reassemblers[idx]
                     .take()
@@ -190,7 +210,9 @@ pub async fn run_receive(
                 return Err(AppError::Transfer(format!("sender cancelled: {reason}")));
             }
             _ => {
-                return Err(AppError::Transfer("unexpected message during transfer".into()));
+                return Err(AppError::Transfer(
+                    "unexpected message during transfer".into(),
+                ));
             }
         }
     }

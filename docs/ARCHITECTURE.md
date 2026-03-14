@@ -35,7 +35,7 @@ Relay is a peer-to-peer file transfer application with automatic connection fall
 
 ## Layer Architecture
 
-### 1. Frontend Layer (React + Solid.js)
+### 1. Frontend Layer (Solid.js + TypeScript)
 **Location**: `client/src/`
 
 - **Components**: Dumb UI components (`SendView.tsx`, `ReceiveView.tsx`, `TransferProgress.tsx`)

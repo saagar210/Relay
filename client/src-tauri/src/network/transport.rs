@@ -12,14 +12,9 @@ use quinn::{RecvStream, SendStream};
 /// A bidirectional transport for exchanging PeerMessages.
 pub enum Transport {
     /// Direct QUIC connection (LAN or public IP).
-    Direct {
-        send: SendStream,
-        recv: RecvStream,
-    },
+    Direct { send: SendStream, recv: RecvStream },
     /// Relayed through the signaling server's WebSocket.
-    Relayed {
-        ws: RelayStream,
-    },
+    Relayed { ws: RelayStream },
 }
 
 impl Transport {
@@ -36,9 +31,7 @@ impl Transport {
     /// Receive a PeerMessage from the remote peer.
     pub async fn recv_peer_message(&mut self) -> AppResult<PeerMessage> {
         match self {
-            Transport::Direct { recv, .. } => {
-                crate::protocol::messages::read_message(recv).await
-            }
+            Transport::Direct { recv, .. } => crate::protocol::messages::read_message(recv).await,
             Transport::Relayed { ws } => ws.recv_message().await,
         }
     }

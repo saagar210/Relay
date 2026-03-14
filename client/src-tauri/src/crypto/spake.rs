@@ -18,8 +18,7 @@ impl KeyExchange {
         let password = Password::new(code.as_bytes());
         let id = Identity::new(SYMMETRIC_ID);
 
-        let (state, outbound_msg) =
-            Spake2::<Ed25519Group>::start_symmetric(&password, &id);
+        let (state, outbound_msg) = Spake2::<Ed25519Group>::start_symmetric(&password, &id);
 
         Self {
             state: Some(state),
@@ -65,7 +64,10 @@ mod tests {
         let sender_key = sender.finish(&receiver_msg).unwrap();
         let receiver_key = receiver.finish(&sender_msg).unwrap();
 
-        assert_eq!(sender_key, receiver_key, "both sides must derive the same key");
+        assert_eq!(
+            sender_key, receiver_key,
+            "both sides must derive the same key"
+        );
     }
 
     #[test]
@@ -79,6 +81,9 @@ mod tests {
         let sender_key = sender.finish(&receiver_msg).unwrap();
         let receiver_key = receiver.finish(&sender_msg).unwrap();
 
-        assert_ne!(sender_key, receiver_key, "different codes must produce different keys");
+        assert_ne!(
+            sender_key, receiver_key,
+            "different codes must produce different keys"
+        );
     }
 }

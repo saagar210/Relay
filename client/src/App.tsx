@@ -196,7 +196,10 @@ export default function App() {
         break;
       case "fileOffer":
         setTransfer("phase", "offer");
-        setTransfer("sessionId", event.session_id);
+        // Keep an existing session id if an older backend omits it in FileOffer.
+        if (event.session_id && event.session_id.trim().length > 0) {
+          setTransfer("sessionId", event.session_id);
+        }
         setTransfer("offerFiles", event.files);
         break;
       case "error":

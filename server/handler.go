@@ -11,13 +11,16 @@ import (
 
 // SignalMessage is the envelope for all signaling messages.
 type SignalMessage struct {
-	Type     string          `json:"type"`
-	Role     string          `json:"role,omitempty"`
-	Payload  json.RawMessage `json:"payload,omitempty"`
-	Message  string          `json:"message,omitempty"`
-	Code     string          `json:"code,omitempty"`
-	PeerInfo *PeerInfo       `json:"peer_info,omitempty"`
+	Type            string          `json:"type"`
+	Role            string          `json:"role,omitempty"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
+	Message         string          `json:"message,omitempty"`
+	Code            string          `json:"code,omitempty"`
+	PeerInfo        *PeerInfo       `json:"peer_info,omitempty"`
+	ProtocolVersion string          `json:"protocol_version,omitempty"`
 }
+
+const signalingProtocolVersion = "1.1.0"
 
 // PeerInfo carries network information about a peer.
 type PeerInfo struct {
@@ -155,14 +158,16 @@ func (s *Server) notifyPeersJoined(sess *Session) {
 
 	// Tell the sender about the receiver.
 	_ = sender.WriteJSON(SignalMessage{
-		Type:     "peer_joined",
-		PeerInfo: receiverInfo,
+		Type:            "peer_joined",
+		PeerInfo:        receiverInfo,
+		ProtocolVersion: signalingProtocolVersion,
 	})
 
 	// Tell the receiver about the sender.
 	_ = receiver.WriteJSON(SignalMessage{
-		Type:     "peer_joined",
-		PeerInfo: senderInfo,
+		Type:            "peer_joined",
+		PeerInfo:        senderInfo,
+		ProtocolVersion: signalingProtocolVersion,
 	})
 }
 
@@ -218,8 +223,9 @@ func (s *Server) forwardLoop(sess *Session, peer *Peer, code string) {
 		// Notify the other peer about the disconnect.
 		if other != nil {
 			_ = other.WriteJSON(SignalMessage{
-				Type:    "peer_disconnected",
-				Message: peer.Role + " disconnected",
+				Type:            "peer_disconnected",
+				Message:         peer.Role + " disconnected",
+				ProtocolVersion: signalingProtocolVersion,
 			})
 		}
 
@@ -247,6 +253,9 @@ func (s *Server) forwardLoop(sess *Session, peer *Peer, code string) {
 			return
 
 		case "spake2", "cert_fingerprint":
+			if msg.ProtocolVersion == "" {
+				msg.ProtocolVersion = signalingProtocolVersion
+			}
 			sess.mu.Lock()
 			other := sess.OtherPeer(peer)
 			sess.mu.Unlock()
@@ -258,6 +267,9 @@ func (s *Server) forwardLoop(sess *Session, peer *Peer, code string) {
 			}
 
 		case "relay_request":
+			if msg.ProtocolVersion == "" {
+				msg.ProtocolVersion = signalingProtocolVersion
+			}
 			sess.mu.Lock()
 			if peer.Role == "sender" {
 				sess.SenderWantsRelay = true
@@ -278,10 +290,16 @@ func (s *Server) forwardLoop(sess *Session, peer *Peer, code string) {
 				log.Printf("relay: both peers requested relay for session %s", code)
 
 				if sender != nil {
-					_ = sender.WriteJSON(SignalMessage{Type: "relay_active"})
+					_ = sender.WriteJSON(SignalMessage{
+						Type:            "relay_active",
+						ProtocolVersion: signalingProtocolVersion,
+					})
 				}
 				if receiver != nil {
-					_ = receiver.WriteJSON(SignalMessage{Type: "relay_active"})
+					_ = receiver.WriteJSON(SignalMessage{
+						Type:            "relay_active",
+						ProtocolVersion: signalingProtocolVersion,
+					})
 				}
 
 				// This forwardLoop returns immediately. The other peer's
@@ -320,16 +338,18 @@ func peerInfoFromConn(conn *websocket.Conn) *PeerInfo {
 
 func sendErrorConn(conn *websocket.Conn, code string, message string) {
 	_ = conn.WriteJSON(SignalMessage{
-		Type:    "error",
-		Code:    code,
-		Message: message,
+		Type:            "error",
+		Code:            code,
+		Message:         message,
+		ProtocolVersion: signalingProtocolVersion,
 	})
 }
 
 func sendError(p *Peer, code string, message string) {
 	_ = p.WriteJSON(SignalMessage{
-		Type:    "error",
-		Code:    code,
-		Message: message,
+		Type:            "error",
+		Code:            code,
+		Message:         message,
+		ProtocolVersion: signalingProtocolVersion,
 	})
 }

@@ -1,5 +1,53 @@
-# Replace these commands with your repo's canonical checks.
-# Keep order strict: fast static checks first, then behavioral, then docs drift.
-npm run lint
-npm run test
-npm run docs:check
+# codex-os-managed
+# G0: Hygiene + execution contract prerequisites
+test -f .codex/codex-os.manifest.json
+bash scripts/git/guard-branch.sh
+test -f .codex/config/operational-gates.json
+test -f .codex/config/release-materials.required.json
+test -f client/src-tauri/release-channels.json
+node scripts/ci/validate-operational-config.mjs
+node scripts/ci/export-operational-thresholds.mjs | (command -v rg >/dev/null && rg '^(PERF_|RELIABILITY_|SECURITY_)' || grep -E '^(PERF_|RELIABILITY_|SECURITY_)')
+node scripts/ci/check-perf-profile.mjs foundation
+
+# G1: Fast correctness
+(cd server && go test -race ./...)
+(cd client/src-tauri && cargo test --lib --bins)
+(cd client && pnpm install --frozen-lockfile)
+(cd client && pnpm typecheck)
+(cd client && pnpm build)
+
+# G2: Integration / E2E
+(cd client/src-tauri && cargo test --test signaling_e2e -- --test-threads=1)
+
+# G3: Security / supply chain (hard fail)
+go install golang.org/x/vuln/cmd/govulncheck@latest
+(cd server && "$(go env GOPATH)/bin/govulncheck" ./...)
+cargo install cargo-audit --locked
+(cd client/src-tauri && cargo audit --deny warnings)
+(cd client && pnpm audit --audit-level high)
+node scripts/ci/check-release-evidence.mjs --gate g3
+node scripts/ci/check-release-materials.mjs
+
+# G4: Perf / reliability smoke
+(cd client && node ../scripts/perf/bundle-report.mjs)
+(eval "$(node scripts/ci/export-operational-thresholds.mjs --shell)" && node scripts/perf/compare-metric.mjs .perf-baselines/bundle.json client/.perf-results/bundle.json totalBytes "$PERF_BUNDLE_DELTA_MAX_RATIO")
+(cd client && npm_execpath="$(command -v pnpm)" node ../scripts/perf/measure-build-time.mjs)
+(eval "$(node scripts/ci/export-operational-thresholds.mjs --shell)" && node scripts/perf/compare-metric.mjs .perf-baselines/build-time.json client/.perf-results/build-time.json buildMs "$PERF_BUILD_DELTA_MAX_RATIO")
+(cd client && MEMORY_MAX_DELTA_MB=5 node --expose-gc ../scripts/perf/memory-smoke.mjs)
+(eval "$(node scripts/ci/export-operational-thresholds.mjs --shell)" && cd client && ASSET_MAX_BYTES="$PERF_ASSET_MAX_BYTES" bash ../scripts/perf/check-assets.sh)
+
+# G5: Release promotion evidence (templates required pre-credentials)
+node scripts/ci/check-release-evidence.mjs --gate g5
+
+# G6: Docs parity for execution + gates
+test -f docs/ARCHITECTURE.md
+test -f docs/SECURITY.md
+test -f docs/RELEASE_GATES.md
+test -f docs/EXECUTION_CONTRACT.md
+test -f docs/LOCAL_SMOKE.md
+test -f docs/release/README.md
+test -f docs/release/RELEASE_GATE_OWNERSHIP.md
+test -f docs/release/RELEASE_CHANNELS.md
+test -f docs/release/COMPATIBILITY_POLICY.md
+test -f docs/release/ROLLBACK_PLAYBOOK.md
+test -f docs/release/CANARY_SCORECARD.md

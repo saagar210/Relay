@@ -88,7 +88,9 @@ impl ChunkDecryptor {
         let plaintext = self
             .key
             .open_in_place(nonce, Aad::empty(), &mut in_out)
-            .map_err(|_| AppError::Crypto("AES-GCM decryption failed (tampered or wrong key)".into()))?;
+            .map_err(|_| {
+                AppError::Crypto("AES-GCM decryption failed (tampered or wrong key)".into())
+            })?;
         Ok(plaintext.to_vec())
     }
 }

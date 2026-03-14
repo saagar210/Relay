@@ -54,14 +54,10 @@ impl TransferCode {
         let word2 = parts[2].to_lowercase();
 
         if !words.contains(&word1.as_str()) {
-            return Err(AppError::InvalidCode(format!(
-                "unknown word: '{word1}'"
-            )));
+            return Err(AppError::InvalidCode(format!("unknown word: '{word1}'")));
         }
         if !words.contains(&word2.as_str()) {
-            return Err(AppError::InvalidCode(format!(
-                "unknown word: '{word2}'"
-            )));
+            return Err(AppError::InvalidCode(format!("unknown word: '{word2}'")));
         }
 
         Ok(Self {

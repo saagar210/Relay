@@ -18,6 +18,7 @@ func newTestServer(t *testing.T, maxSessions int, ttl time.Duration) (*Server, *
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws/{code}", srv.WebSocketHandler)
 	mux.HandleFunc("GET /health", srv.HealthHandler)
+	mux.HandleFunc("GET /api/health", srv.HealthHandler)
 	ts := httptest.NewServer(mux)
 	return srv, ts
 }
@@ -71,6 +72,9 @@ func TestWebSocketHandshake(t *testing.T) {
 	if senderMsg.Type != "peer_joined" {
 		t.Errorf("sender expected peer_joined, got %s", senderMsg.Type)
 	}
+	if senderMsg.ProtocolVersion != signalingProtocolVersion {
+		t.Errorf("sender expected protocol_version %s, got %s", signalingProtocolVersion, senderMsg.ProtocolVersion)
+	}
 	if senderMsg.PeerInfo == nil {
 		t.Error("sender peer_joined missing peer_info")
 	}
@@ -78,6 +82,9 @@ func TestWebSocketHandshake(t *testing.T) {
 	receiverMsg := readMsg(t, receiver)
 	if receiverMsg.Type != "peer_joined" {
 		t.Errorf("receiver expected peer_joined, got %s", receiverMsg.Type)
+	}
+	if receiverMsg.ProtocolVersion != signalingProtocolVersion {
+		t.Errorf("receiver expected protocol_version %s, got %s", signalingProtocolVersion, receiverMsg.ProtocolVersion)
 	}
 	if receiverMsg.PeerInfo == nil {
 		t.Error("receiver peer_joined missing peer_info")
@@ -146,6 +153,9 @@ func TestDuplicateCode(t *testing.T) {
 	if msg.Type != "error" {
 		t.Errorf("expected error, got %s", msg.Type)
 	}
+	if msg.ProtocolVersion != signalingProtocolVersion {
+		t.Errorf("expected protocol_version %s, got %s", signalingProtocolVersion, msg.ProtocolVersion)
+	}
 	if msg.Code != "CODE_IN_USE" {
 		t.Errorf("expected CODE_IN_USE, got %s", msg.Code)
 	}
@@ -176,6 +186,9 @@ func TestDisconnect(t *testing.T) {
 	msg := readMsg(t, receiver)
 	if msg.Type != "peer_disconnected" {
 		t.Errorf("expected peer_disconnected, got %s", msg.Type)
+	}
+	if msg.ProtocolVersion != signalingProtocolVersion {
+		t.Errorf("expected protocol_version %s, got %s", signalingProtocolVersion, msg.ProtocolVersion)
 	}
 
 	// Give cleanup a moment.

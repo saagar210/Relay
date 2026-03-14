@@ -65,8 +65,7 @@ impl RelayStream {
                         ));
                     }
 
-                    let len =
-                        u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                    let len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
 
                     if data.len() != 4 + len {
                         return Err(AppError::Transfer(format!(
@@ -75,14 +74,15 @@ impl RelayStream {
                         )));
                     }
 
-                    let msg: PeerMessage = rmp_serde::from_slice(&data[4..]).map_err(|e| {
-                        AppError::Serialization(format!("relay decode: {e}"))
-                    })?;
+                    let msg: PeerMessage = rmp_serde::from_slice(&data[4..])
+                        .map_err(|e| AppError::Serialization(format!("relay decode: {e}")))?;
 
                     return Ok(msg);
                 }
                 Message::Close(_) => {
-                    return Err(AppError::WebSocket("relay connection closed by peer".into()));
+                    return Err(AppError::WebSocket(
+                        "relay connection closed by peer".into(),
+                    ));
                 }
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
                     continue;

@@ -18,6 +18,7 @@ use tracing::{debug, info};
 
 use crate::crypto::aes_gcm::{ChunkDecryptor, ChunkEncryptor};
 use crate::error::{AppError, AppResult};
+use crate::protocol::version::{is_peer_protocol_compatible, CURRENT_PROTOCOL_VERSION};
 
 /// Information about a peer's network addresses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +33,7 @@ pub struct PeerInfo {
 }
 
 /// Message format matching the Go server's SignalMessage.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SignalMessage {
     #[serde(rename = "type")]
     msg_type: String,
@@ -46,6 +47,8 @@ struct SignalMessage {
     peer_info: Option<PeerInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     payload: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protocol_version: Option<String>,
 }
 
 type WsStream =
@@ -73,11 +76,7 @@ impl SignalingClient {
     }
 
     /// Register with the signaling server as sender or receiver.
-    pub async fn register(
-        &mut self,
-        role: &str,
-        local_addr: Option<SocketAddr>,
-    ) -> AppResult<()> {
+    pub async fn register(&mut self, role: &str, local_addr: Option<SocketAddr>) -> AppResult<()> {
         let peer_info = local_addr.map(|addr| {
             let ip = addr.ip();
             // Replace unspecified (0.0.0.0) with actual local IP
@@ -101,6 +100,7 @@ impl SignalingClient {
             message: None,
             code: None,
             payload: None,
+            protocol_version: None,
         };
 
         self.send_json(&msg).await?;
@@ -117,7 +117,10 @@ impl SignalingClient {
                     let info = msg.peer_info.ok_or_else(|| {
                         AppError::WebSocket("peer_joined missing peer_info".into())
                     })?;
-                    info!("signaling: peer joined (public={}:{})", info.public_ip, info.public_port);
+                    info!(
+                        "signaling: peer joined (public={}:{})",
+                        info.public_ip, info.public_port
+                    );
                     return Ok(info);
                 }
                 "error" => {
@@ -143,6 +146,7 @@ impl SignalingClient {
             code: None,
             peer_info: None,
             payload: None,
+            protocol_version: None,
         };
         self.send_json(&msg).await?;
         debug!("signaling: sent SPAKE2 message ({} bytes)", outbound.len());
@@ -158,7 +162,10 @@ impl SignalingClient {
                     let decoded = BASE64_STANDARD
                         .decode(&encoded)
                         .map_err(|e| AppError::WebSocket(format!("bad base64: {e}")))?;
-                    debug!("signaling: received SPAKE2 message ({} bytes)", decoded.len());
+                    debug!(
+                        "signaling: received SPAKE2 message ({} bytes)",
+                        decoded.len()
+                    );
                     return Ok(decoded);
                 }
                 "error" => {
@@ -196,6 +203,7 @@ impl SignalingClient {
             code: None,
             peer_info: None,
             payload: None,
+            protocol_version: None,
         };
         self.send_json(&msg).await?;
         debug!("signaling: sent cert fingerprint");
@@ -257,6 +265,7 @@ impl SignalingClient {
             code: None,
             peer_info: None,
             payload: None,
+            protocol_version: None,
         };
         self.send_json(&msg).await?;
         info!("signaling: sent relay_request");
@@ -276,6 +285,7 @@ impl SignalingClient {
                         code: None,
                         peer_info: None,
                         payload: None,
+                        protocol_version: None,
                     };
                     self.send_json(&ready).await?;
                     return Ok(());
@@ -326,6 +336,7 @@ impl SignalingClient {
             code: None,
             peer_info: None,
             payload: None,
+            protocol_version: None,
         };
         self.send_json(&msg).await.ok(); // best-effort
         self.ws.close(None).await.ok();
@@ -336,7 +347,12 @@ impl SignalingClient {
     // -- Internal helpers --
 
     async fn send_json(&mut self, msg: &SignalMessage) -> AppResult<()> {
-        let json = serde_json::to_string(msg)
+        let mut envelope = msg.clone();
+        if envelope.protocol_version.is_none() {
+            envelope.protocol_version = Some(CURRENT_PROTOCOL_VERSION.to_string());
+        }
+
+        let json = serde_json::to_string(&envelope)
             .map_err(|e| AppError::WebSocket(format!("serialize: {e}")))?;
         self.ws
             .send(Message::Text(json.into()))
@@ -358,6 +374,18 @@ impl SignalingClient {
                 Message::Text(text) => {
                     let msg: SignalMessage = serde_json::from_str(&text)
                         .map_err(|e| AppError::WebSocket(format!("deserialize: {e}")))?;
+                    if let Some(peer_version) = msg.protocol_version.as_deref() {
+                        if !is_peer_protocol_compatible(peer_version) {
+                            return Err(AppError::WebSocket(format!(
+                                "incompatible signaling protocol version '{peer_version}' (local {CURRENT_PROTOCOL_VERSION})"
+                            )));
+                        }
+                    } else {
+                        debug!(
+                            "signaling: protocol_version missing on '{}'; assuming legacy-compatible peer",
+                            msg.msg_type
+                        );
+                    }
                     return Ok(msg);
                 }
                 Message::Close(_) => {

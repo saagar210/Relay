@@ -108,6 +108,21 @@ fn sanitize_path(p: &str) -> Result<()> {
    - Default rate limit: 10 MB/s per session
    - **Mitigation**: Prefer direct QUIC when possible
 
+## Vulnerability Gate Policy
+
+- CI vulnerability scanning is hard-fail for:
+  - Go (`govulncheck`)
+  - Rust (`cargo audit`)
+  - JavaScript (`pnpm audit`)
+- Release preflight is hard-fail for required supply-chain evidence:
+  - SBOM artifact
+  - Provenance artifact
+  - Artifact signature record
+
+- Rust advisory exceptions are tracked in `client/src-tauri/.cargo/audit.toml`.
+  - These are currently upstream-driven GTK3/Tauri transitive advisories.
+  - Exceptions are temporary and must be removed as upstream remediations land.
+
 ## Vulnerability Disclosure
 
 If you discover a security vulnerability, please report it to:
